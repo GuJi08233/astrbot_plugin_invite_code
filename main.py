@@ -26,8 +26,6 @@ INVITE_URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-EMAIL_PATTERN = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
-
 # 各站点的验证规则
 SITE_VERIFY_RULES: list[dict] = [
     {
@@ -734,7 +732,6 @@ class InviteCodePlugin(Star):
         delivery = self.config.get("delivery_method", "private_message")
         attempts = 0
         confirm_phase = True
-        email_phase = False
 
         expiry_hint = (
             f"（{self._format_expiry(invite)}）" if invite.get("expires_at") else ""
@@ -758,7 +755,7 @@ class InviteCodePlugin(Star):
 
             @session_waiter(timeout=timeout)
             async def waiter(controller: SessionController, e: AstrMessageEvent):
-                nonlocal attempts, confirm_phase, email_phase, invite, question_text, kb_question
+                nonlocal attempts, confirm_phase, invite, question_text, kb_question
                 nonlocal reference_answer, correct_answer, use_kb, expiry_hint
 
                 # 只响应发起者，忽略其他人
@@ -791,17 +788,6 @@ class InviteCodePlugin(Star):
                         # 不回复，静默等待，超时自动取消
                         controller.keep(timeout=timeout, reset_timeout=True)
                         return
-
-                if email_phase:
-                    qq_email = f"{e.get_sender_id()}@qq.com"
-                    try:
-                        await self._send_email(qq_email, invite["code"], invite["name"])
-                        await e.send(e.plain_result(f"邀请码已发送到 {qq_email}，请查收。"))
-                    except Exception as exc:
-                        logger.error(f"邮件发送失败: {exc}")
-                        await e.send(e.plain_result(f"邮件发送失败: {exc}"))
-                    controller.stop()
-                    return
 
                 attempts += 1
 
@@ -865,11 +851,14 @@ class InviteCodePlugin(Star):
                             return
 
                     if delivery == "email":
-                        email_phase = True
-                        await e.send(e.plain_result(
-                            "回答正确！请输入你的邮箱地址，发送「退出」可取消。"
-                        ))
-                        controller.keep(timeout=timeout, reset_timeout=True)
+                        qq_email = f"{e.get_sender_id()}@qq.com"
+                        try:
+                            await self._send_email(qq_email, invite["code"], invite["name"])
+                            await e.send(e.plain_result(f"回答正确！邀请码已发送到 {qq_email}，请查收。"))
+                        except Exception as exc:
+                            logger.error(f"邮件发送失败: {exc}")
+                            await e.send(e.plain_result(f"邮件发送失败: {exc}"))
+                        controller.stop()
                         return
 
                     await e.send(e.plain_result("回答正确，正在私发邀请码，请查看私聊。"))
