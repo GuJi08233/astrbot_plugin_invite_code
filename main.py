@@ -11,6 +11,7 @@ import httpx
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
+from astrbot.core.platform.message_type import MessageType
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.utils.session_waiter import SessionController, session_waiter
 
@@ -632,7 +633,7 @@ class InviteCodePlugin(Star):
         if not self.invite_codes:
             yield event.plain_result("暂无可用的邀请码。")
             return
-        is_group = event.get_message_type() == filter.EventMessageType.GROUP_MESSAGE
+        is_group = event.get_message_type() == MessageType.GROUP_MESSAGE
         lines = []
         for e in self.invite_codes:
             expired = "已过期" if self._is_expired(e) else self._format_expiry(e)
