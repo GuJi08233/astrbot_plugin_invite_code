@@ -1,0 +1,132 @@
+{
+  "use_worker": {
+    "description": "使用 Cloudflare Worker 验证",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后通过 Cloudflare Worker 验证邀请链接。关闭则使用内置 Playwright 浏览器验证（需安装 playwright）"
+  },
+  "verify_api_url": {
+    "description": "Worker 验证 API 地址",
+    "type": "string",
+    "default": "",
+    "hint": "Cloudflare Worker URL，如 https://linuxdo.donz1n666.workers.dev。仅 use_worker 开启时生效"
+  },
+  "verify_api_token": {
+    "description": "Worker 鉴权 Token",
+    "type": "string",
+    "default": "",
+    "hint": "与 wrangler secret AUTH_TOKEN 保持一致，防止 API 被滥用"
+  },
+  "kb_names": {
+    "description": "知识库（出题来源）",
+    "type": "list",
+    "_special": "select_knowledgebase",
+    "hint": "选择用于生成验证题目的知识库。留空则使用每个邀请码自带的固定问答"
+  },
+  "question_pool_size": {
+    "description": "题库大小",
+    "type": "int",
+    "default": 20,
+    "hint": "从知识库预生成的题量，每次 /刷新题库 重新生成"
+  },
+  "judge_model": {
+    "description": "判断模型（意图识别 + 答案评判）",
+    "type": "string",
+    "_special": "select_provider",
+    "default": "",
+    "hint": "用于意图分类和答案评判的 LLM 模型。留空则使用全局默认提供商"
+  },
+  "judge_prompt_template": {
+    "description": "判断模型输出格式模板",
+    "type": "string",
+    "default": "只回复 JSON: {\"correct\": true/false, \"feedback\": \"简短评价\"}",
+    "hint": "附加到判题 prompt 末尾，指导 LLM 按指定 JSON 格式输出。{correct} 表示是否正确，{feedback} 为评价"
+  },
+  "question_gen_model": {
+    "description": "出题模型（题库生成）",
+    "type": "string",
+    "_special": "select_provider",
+    "default": "",
+    "hint": "用于从知识库批量生成题目的 LLM 模型。留空则使用全局默认提供商"
+  },
+  "question_gen_prompt_template": {
+    "description": "出题模型输出格式模板",
+    "type": "string",
+    "default": "输出 JSON 数组，每个元素:\n{\"question\": \"...\", \"reference_answer\": \"评判要点...\", \"type\": \"knowledge|case\"}\n只输出 JSON，不要其他内容。",
+    "hint": "附加到出题 prompt 末尾，指导 LLM 按指定 JSON 格式输出题目列表"
+  },
+  "enable_verify": {
+    "description": "启用链接有效性验证",
+    "type": "bool",
+    "default": true,
+    "hint": "收到邀请链接时自动验证是否有效，无效链接拒绝存入。关闭后跳过所有验证"
+  },
+  "expire_hours": {
+    "description": "链接过期时间(小时)",
+    "type": "int",
+    "default": 24,
+    "hint": "用户投稿的邀请链接有效期，超时自动清理。0 表示永不过期"
+  },
+  "default_question": {
+    "description": "默认验证问题（知识库模式未启用时生效）",
+    "type": "string",
+    "default": "请回答：这个社区的简称是什么？",
+    "hint": "未启用知识库出题时，用户投稿链接使用的默认验证问题"
+  },
+  "default_answer": {
+    "description": "默认验证答案（知识库模式未启用时生效）",
+    "type": "string",
+    "default": "linuxdo",
+    "hint": "未启用知识库出题时，用户投稿链接使用的默认验证答案"
+  },
+  "allow_retry": {
+    "description": "允许重试次数",
+    "type": "int",
+    "default": 3,
+    "hint": "用户回答错误时允许重试的次数，0 表示不限制"
+  },
+  "session_timeout": {
+    "description": "会话超时(秒)",
+    "type": "int",
+    "default": 120,
+    "hint": "验证问答会话的超时时间"
+  },
+  "delivery_method": {
+    "description": "邀请码发送方式",
+    "type": "string",
+    "options": ["private_message", "email"],
+    "default": "private_message",
+    "hint": "用户通过验证后的发送方式：private_message 为 QQ 私聊发送，email 为邮件发送"
+  },
+  "email_config": {
+    "description": "邮件发送配置（delivery_method 为 email 时生效）",
+    "type": "object",
+    "items": {
+      "smtp_host": {
+        "description": "SMTP 服务器地址",
+        "type": "string",
+        "default": ""
+      },
+      "smtp_port": {
+        "description": "SMTP 端口",
+        "type": "int",
+        "default": 587
+      },
+      "user": {
+        "description": "发件邮箱账号",
+        "type": "string",
+        "default": ""
+      },
+      "password": {
+        "description": "发件邮箱密码/授权码",
+        "type": "string",
+        "default": ""
+      },
+      "from_name": {
+        "description": "发件人名称",
+        "type": "string",
+        "default": "AstrBot"
+      }
+    }
+  }
+}
