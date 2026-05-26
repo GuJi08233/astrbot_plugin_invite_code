@@ -790,9 +790,7 @@ class InviteCodePlugin(Star):
                         controller.keep(timeout=timeout, reset_timeout=True)
                         return
                     else:
-                        await e.send(e.plain_result(
-                            "回复「是」开始答题，回复「退出」取消。"
-                        ))
+                        # 不回复，静默等待，超时自动取消
                         controller.keep(timeout=timeout, reset_timeout=True)
                         return
 
