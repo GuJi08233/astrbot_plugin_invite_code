@@ -9,7 +9,7 @@
     "description": "Worker 验证 API 地址",
     "type": "string",
     "default": "",
-    "hint": "Cloudflare Worker URL，如 https://linuxdo.donz1n666.workers.dev。仅 use_worker 开启时生效"
+    "hint": "Cloudflare Worker URL，如 https://your-worker.workers.dev。仅 use_worker 开启时生效"
   },
   "verify_api_token": {
     "description": "Worker 鉴权 Token",
@@ -76,7 +76,7 @@
   "default_answer": {
     "description": "默认验证答案（知识库模式未启用时生效）",
     "type": "string",
-    "default": "linuxdo",
+    "default": "L站",
     "hint": "未启用知识库出题时，用户投稿链接使用的默认验证答案"
   },
   "allow_retry": {

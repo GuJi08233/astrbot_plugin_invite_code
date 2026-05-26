@@ -525,7 +525,7 @@ class InviteCodePlugin(Star):
             "name": f"用户投稿-{sender_name}",
             "code": url,
             "question": self.config.get("default_question", "请回答：这个社区的简称是什么？"),
-            "answer": self.config.get("default_answer", "linuxdo").strip().lower(),
+            "answer": self.config.get("default_answer", "L站").strip().lower(),
             "expires_at": expires_at,
             "source": "user_contributed",
             "contributor": sender_id,
@@ -728,7 +728,7 @@ class InviteCodePlugin(Star):
             reference_answer = kb_question.get("reference_answer", "")
         else:
             question_text = invite.get("question", self.config.get("default_question", ""))
-            correct_answer = invite.get("answer", self.config.get("default_answer", "linuxdo")).strip().lower()
+            correct_answer = invite.get("answer", self.config.get("default_answer", "L站")).strip().lower()
 
         confirm_prompt = (
             f"检测到你可能需要邀请码【{invite['name']}】{expiry_hint}，"
@@ -826,7 +826,7 @@ class InviteCodePlugin(Star):
                                     reference_answer = kb_question.get("reference_answer", "")
                                 else:
                                     question_text = invite.get("question", self.config.get("default_question", ""))
-                                    correct_answer = invite.get("answer", self.config.get("default_answer", "linuxdo")).strip().lower()
+                                    correct_answer = invite.get("answer", self.config.get("default_answer", "L站")).strip().lower()
                                 expiry_hint = (
                                     f"（{self._format_expiry(invite)}）"
                                     if invite.get("expires_at") else ""
@@ -921,7 +921,7 @@ class InviteCodePlugin(Star):
             )
         else:
             question = invite.get("question", self.config.get("default_question", ""))
-            expected_answer = invite.get("answer", self.config.get("default_answer", "linuxdo")).strip().lower()
+            expected_answer = invite.get("answer", self.config.get("default_answer", "L站")).strip().lower()
             return json.dumps(
                 {
                     "invite_id": invite["id"],
