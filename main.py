@@ -755,7 +755,7 @@ class InviteCodePlugin(Star):
             @session_waiter(timeout=timeout)
             async def waiter(controller: SessionController, e: AstrMessageEvent):
                 nonlocal attempts, confirm_phase, email_phase, invite, question_text, kb_question
-                nonlocal reference_answer, correct_answer, use_kb
+                nonlocal reference_answer, correct_answer, use_kb, expiry_hint
                 text = e.message_str.strip()
 
                 if text == "退出":
