@@ -754,13 +754,24 @@ class InviteCodePlugin(Star):
         )
         yield event.plain_result(confirm_prompt)
 
+        sender_id = event.get_sender_id()
+
         try:
 
             @session_waiter(timeout=timeout)
             async def waiter(controller: SessionController, e: AstrMessageEvent):
                 nonlocal attempts, confirm_phase, email_phase, invite, question_text, kb_question
                 nonlocal reference_answer, correct_answer, use_kb, expiry_hint
+
+                # 只响应发起者，忽略其他人
+                if e.get_sender_id() != sender_id:
+                    controller.keep(timeout=timeout, reset_timeout=True)
+                    return
+
                 text = e.message_str.strip()
+                if not text:
+                    controller.keep(timeout=timeout, reset_timeout=True)
+                    return
 
                 if text == "退出":
                     await e.send(e.plain_result("已取消。"))
@@ -786,15 +797,10 @@ class InviteCodePlugin(Star):
                         return
 
                 if email_phase:
-                    if not EMAIL_PATTERN.match(text):
-                        await e.send(e.plain_result(
-                            "邮箱格式不正确，请重新输入。发送「退出」可取消。"
-                        ))
-                        controller.keep(timeout=timeout, reset_timeout=True)
-                        return
+                    qq_email = f"{e.get_sender_id()}@qq.com"
                     try:
-                        await self._send_email(text, invite["code"], invite["name"])
-                        await e.send(e.plain_result("邀请码已发送到你的邮箱，请查收。"))
+                        await self._send_email(qq_email, invite["code"], invite["name"])
+                        await e.send(e.plain_result(f"邀请码已发送到 {qq_email}，请查收。"))
                     except Exception as exc:
                         logger.error(f"邮件发送失败: {exc}")
                         await e.send(e.plain_result(f"邮件发送失败: {exc}"))
