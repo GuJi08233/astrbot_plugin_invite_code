@@ -745,8 +745,8 @@ class InviteCodePlugin(Star):
             correct_answer = invite.get("answer", self.config.get("default_answer", "L站")).strip().lower()
 
         confirm_prompt = (
-            f"检测到你可能需要邀请码【{invite['name']}】{expiry_hint}，"
-            f"是否要进行答题获取？\n回复「是」开始答题，回复「退出」取消。"
+            "检测到你可能需要 Linux.Do 邀请码，"
+            "是否要进行答题获取？\n回复「是」开始答题，回复「退出」取消。"
         )
         yield event.plain_result(confirm_prompt)
 
@@ -847,8 +847,8 @@ class InviteCodePlugin(Star):
                                 )
                                 await e.send(e.plain_result(
                                     f"该邀请链接已失效（{verify_msg}），为你更换另一个。\n\n"
-                                    f"检测到你可能需要邀请码【{invite['name']}】{expiry_hint}，"
-                                    f"是否要答题获取？回复「是」开始，回复「退出」取消。"
+                                    "检测到你可能需要 Linux.Do 邀请码，"
+                                    "是否要答题获取？回复「是」开始，回复「退出」取消。"
                                 ))
                                 controller.keep(timeout=timeout, reset_timeout=True)
                                 return
