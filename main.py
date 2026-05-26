@@ -648,11 +648,8 @@ class InviteCodePlugin(Star):
             if is_group and len(code) > 20:
                 code = code[:10] + "****" + code[-6:]
             lines.append(
-                f"ID={e['id']} | {e['name']} | 来源: {e.get('source', 'admin')}"
-                f" | 验证: {v_status}\n"
-                f"   链接: {code}\n"
-                f"   问题: {e['question']} | 答案: {e['answer']}\n"
-                f"   过期: {expired}"
+                f"ID={e['id']} | {e['name']} | {v_status} | {expired}\n"
+                f"    {code}"
             )
         yield event.plain_result("邀请码列表：\n" + "\n".join(lines))
 
