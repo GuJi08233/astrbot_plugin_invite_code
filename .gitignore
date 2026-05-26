@@ -2,4 +2,5 @@ __pycache__/
 *.pyc
 invite_codes.json
 question_pool.json
+daily_usage.json
 worker/node_modules/

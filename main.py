@@ -48,10 +48,13 @@ class InviteCodePlugin(Star):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.data_file = self.data_dir / "invite_codes.json"
         self.question_file = self.data_dir / "question_pool.json"
+        self.daily_usage_file = self.data_dir / "daily_usage.json"
         self.invite_codes: list[dict] = []
         self.question_pool: list[dict] = []
+        self._daily_usage: dict[str, set[str]] = {}
         self._load_data()
         self._load_question_pool()
+        self._load_daily_usage()
         self._cleanup_expired()
         self._cleanup_task: asyncio.Task | None = None
 
@@ -114,6 +117,51 @@ class InviteCodePlugin(Star):
                 json.dump(self.question_pool, f, ensure_ascii=False, indent=2)
         except Exception:
             logger.error("保存题库失败", exc_info=True)
+
+    @staticmethod
+    def _today_str() -> str:
+        import datetime
+        return datetime.date.today().isoformat()
+
+    def _load_daily_usage(self):
+        if self.daily_usage_file.exists():
+            try:
+                with open(self.daily_usage_file, encoding="utf-8") as f:
+                    raw = json.load(f)
+                today = self._today_str()
+                self._daily_usage = {
+                    k: set(v) for k, v in raw.items() if k >= today
+                }
+            except Exception:
+                self._daily_usage = {}
+        else:
+            self._daily_usage = {}
+
+    def _save_daily_usage(self):
+        try:
+            with open(self.daily_usage_file, "w", encoding="utf-8") as f:
+                json.dump(
+                    {k: list(v) for k, v in self._daily_usage.items()},
+                    f, ensure_ascii=False, indent=2,
+                )
+        except Exception:
+            logger.error("保存每日用量失败", exc_info=True)
+
+    def _check_daily_limit(self, user_id: str) -> bool:
+        """检查用户是否超限。返回 True 表示可以继续。"""
+        limit = self.config.get("daily_limit", 1)
+        if limit <= 0:
+            return True
+        today = self._today_str()
+        used = self._daily_usage.get(today, set())
+        return len(used) < limit
+
+    def _record_daily_usage(self, user_id: str):
+        today = self._today_str()
+        if today not in self._daily_usage:
+            self._daily_usage[today] = set()
+        self._daily_usage[today].add(user_id)
+        self._save_daily_usage()
 
     def _use_kb(self) -> bool:
         kb_names = self.config.get("kb_names", [])
@@ -713,6 +761,11 @@ class InviteCodePlugin(Star):
         except Exception as e:
             logger.debug(f"意图判断失败，回退到直接触发: {e}")
 
+        if not self._check_daily_limit(event.get_sender_id()):
+            yield event.plain_result("你今天已经获取过邀请码了，明天再来吧。")
+            event.stop_event()
+            return
+
         invite = self._pick_random_invite()
         if not invite:
             yield event.plain_result("暂无可用的邀请码。你可以在私聊中向机器人发送邀请链接来贡献。")
@@ -854,6 +907,7 @@ class InviteCodePlugin(Star):
                         qq_email = f"{e.get_sender_id()}@qq.com"
                         try:
                             await self._send_email(qq_email, invite["code"], invite["name"])
+                            self._record_daily_usage(e.get_sender_id())
                             await e.send(e.plain_result(f"回答正确！邀请码已发送到 {qq_email}，请查收。"))
                         except Exception as exc:
                             logger.error(f"邮件发送失败: {exc}")
@@ -864,6 +918,7 @@ class InviteCodePlugin(Star):
                     await e.send(e.plain_result("回答正确，正在私发邀请码，请查看私聊。"))
                     try:
                         await self._send_private_msg(e, invite["code"], invite["name"])
+                        self._record_daily_usage(e.get_sender_id())
                     except Exception:
                         await e.send(e.plain_result(
                             "私发失败，请确认已添加机器人为好友，或联系管理员。"

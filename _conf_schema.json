@@ -92,6 +92,12 @@
     "default": 3,
     "hint": "用户回答错误时允许重试的次数，0 表示不限制"
   },
+  "daily_limit": {
+    "description": "每人每天邀请码获取上限",
+    "type": "int",
+    "default": 1,
+    "hint": "每人每天最多通过问答获取邀请码的次数，0 表示不限制"
+  },
   "session_timeout": {
     "description": "会话超时(秒)",
     "type": "int",
