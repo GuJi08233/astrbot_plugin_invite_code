@@ -693,7 +693,7 @@ class InviteCodePlugin(Star):
         if event.get_sender_id() == event.get_self_id():
             return
         msg = event.message_str.strip()
-        if msg.startswith("/"):
+        if msg.startswith(("/", "!", "#", "！")) or msg.startswith("邀请码"):
             return
 
         # LLM 意图判断：是真心在求邀请码，还是只是讨论交流
