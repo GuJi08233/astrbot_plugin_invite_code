@@ -2,7 +2,7 @@ name: astrbot_plugin_invite_code
 display_name: Linux.Do 知识问答 奖励
 author: Donzin
 version: 1.0.0
-desc: Linux.Do 社区邀请码自助验证与分发。管理员存入邀请码和验证问题，群成员请求时通过知识库出题/固定问答验证，回答正确后私聊或邮件发送邀请码。
+desc: Linux.Do 社区知识问答，答对奖励邀请码。管理员存入邀请码和验证问题，群成员请求时通过知识库出题/固定问答验证，正确后私聊或邮件发送。
 repo: https://github.com/GuJi08233/astrbot_plugin_invite_code
 astrbot_version: ">=4.16,<5"
 support_platforms:
