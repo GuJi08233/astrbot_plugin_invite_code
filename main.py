@@ -627,11 +627,12 @@ class InviteCodePlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("邀请码列表")
     async def list_invite_codes(self, event: AstrMessageEvent):
-        """列出所有邀请码及过期/验证状态。"""
+        """列出所有邀请码及过期/验证状态。群聊中自动隐藏邀请链接。"""
         self._cleanup_expired()
         if not self.invite_codes:
             yield event.plain_result("暂无可用的邀请码。")
             return
+        is_group = event.get_message_type() == filter.EventMessageType.GROUP_MESSAGE
         lines = []
         for e in self.invite_codes:
             expired = "已过期" if self._is_expired(e) else self._format_expiry(e)
@@ -642,10 +643,13 @@ class InviteCodePlugin(Star):
                 v_status = "无效"
             else:
                 v_status = "未验证"
+            code = e["code"]
+            if is_group and len(code) > 20:
+                code = code[:10] + "****" + code[-6:]
             lines.append(
                 f"ID={e['id']} | {e['name']} | 来源: {e.get('source', 'admin')}"
                 f" | 验证: {v_status}\n"
-                f"   链接: {e['code']}\n"
+                f"   链接: {code}\n"
                 f"   问题: {e['question']} | 答案: {e['answer']}\n"
                 f"   过期: {expired}"
             )
