@@ -17,6 +17,13 @@
     "default": "",
     "hint": "与 wrangler secret AUTH_TOKEN 保持一致，防止 API 被滥用"
   },
+  "verify_fail_mode": {
+    "description": "API 不可用时如何处理",
+    "type": "string",
+    "options": ["pass", "reject"],
+    "default": "pass",
+    "hint": "pass=验证失败/API超时/未配置API时仍放行存入；reject=验证失败时拒绝存入，严格模式"
+  },
   "kb_names": {
     "description": "知识库（出题来源）",
     "type": "list",

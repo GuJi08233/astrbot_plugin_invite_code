@@ -256,6 +256,10 @@ class InviteCodePlugin(Star):
                 return rule
         return None
 
+    def _verify_fail_open(self) -> bool:
+        """验证失败/API 不可用时是否放行"""
+        return self.config.get("verify_fail_mode", "pass") == "pass"
+
     async def _verify_invite_link(self, url: str) -> tuple[bool, str]:
         """验证邀请链接是否有效。use_worker 开启时走外部 API；关闭时使用内置 Playwright。"""
         rule = self._detect_site_rule(url)
@@ -267,7 +271,8 @@ class InviteCodePlugin(Star):
             api_url = self.config.get("verify_api_url", "").strip()
             if api_url:
                 return await self._verify_via_api(api_url, url, rule)
-            return True, "Worker API 未配置，跳过验证"
+            ok = self._verify_fail_open()
+            return ok, "Worker API 未配置，跳过验证" if ok else "Worker API 未配置，拒绝存入"
 
         return await self._verify_via_browser(url, rule)
 
@@ -295,10 +300,12 @@ class InviteCodePlugin(Star):
                 return is_valid, msg
         except httpx.HTTPStatusError as e:
             logger.warning(f"验证 API 返回错误 {e.response.status_code}: {e}")
-            return True, f"API 返回 {e.response.status_code}，当作有效处理"
+            ok = self._verify_fail_open()
+            return ok, f"API 返回 {e.response.status_code}，{'当作有效处理' if ok else '拒绝存入'}"
         except Exception as e:
             logger.warning(f"调用验证 API 失败: {e}")
-            return True, f"API 不可用，当作有效处理: {e}"
+            ok = self._verify_fail_open()
+            return ok, f"API 不可用，{'当作有效处理' if ok else '拒绝存入'}: {e}"
 
     async def _verify_via_browser(
         self, url: str, rule: dict
@@ -337,9 +344,12 @@ class InviteCodePlugin(Star):
                 await page.close()
         except ImportError:
             logger.warning("Playwright 未安装，跳过链接验证")
-            return True, "无法验证（Playwright 未安装）"
+            ok = self._verify_fail_open()
+            return ok, "无法验证（Playwright 未安装）" if ok else "无法验证（Playwright 未安装），拒绝存入"
         except Exception as e:
             logger.warning(f"链接验证异常: {e}")
+            ok = self._verify_fail_open()
+            return ok, f"验证异常，{'当作有效处理' if ok else '拒绝存入'}: {e}"
             return True, f"验证异常，当作有效处理: {e}"
 
     async def _generate_question_pool(self, event: AstrMessageEvent | None = None):
@@ -539,7 +549,11 @@ class InviteCodePlugin(Star):
         yield event.plain_result(
             f"邀请链接已验证有效（{verify_msg}），已自动存入！\n"
             f"过期时间：{self._format_expiry(entry)}\n"
-            f"其他群友获取时需要回答：{entry['question']}"
+            + (
+                "已启用知识库出题，群友获取时会从题库随机抽题。"
+                if self._use_kb()
+                else f"其他群友获取时需要回答：{entry['question']}"
+            )
         )
 
     # ========== Admin Commands ==========
