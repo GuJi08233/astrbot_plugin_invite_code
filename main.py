@@ -359,25 +359,36 @@ class InviteCodePlugin(Star):
 
     # ========== Browser & Verification ==========
 
+    async def _get_intent_provider(self, event: AstrMessageEvent | None = None):
+        """Get intent detection provider (primary then fallback)."""
+        for key in ("intent_model", "intent_fallback_model"):
+            model_id = self.config.get(key, "").strip()
+            if model_id:
+                prov = await self.context.provider_manager.get_provider_by_id(model_id)
+                if prov:
+                    return prov
+        umo = event.unified_msg_origin if event else None
+        return self.context.get_using_provider(umo=umo)
+
     async def _get_judge_provider(self, event: AstrMessageEvent | None = None):
-        """获取判断模型提供商（意图识别 + 答案评判）。"""
-        model_id = self.config.get("judge_model", "").strip()
-        if model_id:
-            prov = await self.context.provider_manager.get_provider_by_id(model_id)
-            if prov:
-                return prov
-            logger.warning(f"判断模型 {model_id} 未找到，回退到默认提供商")
+        """Get answer judge provider (primary then fallback)."""
+        for key in ("judge_model", "judge_fallback_model"):
+            model_id = self.config.get(key, "").strip()
+            if model_id:
+                prov = await self.context.provider_manager.get_provider_by_id(model_id)
+                if prov:
+                    return prov
         umo = event.unified_msg_origin if event else None
         return self.context.get_using_provider(umo=umo)
 
     async def _get_question_gen_provider(self, event: AstrMessageEvent | None = None):
-        """获取出题模型提供商（题库生成）。"""
-        model_id = self.config.get("question_gen_model", "").strip()
-        if model_id:
-            prov = await self.context.provider_manager.get_provider_by_id(model_id)
-            if prov:
-                return prov
-            logger.warning(f"出题模型 {model_id} 未找到，回退到默认提供商")
+        """Get question generation provider (primary then fallback)."""
+        for key in ("question_gen_model", "question_gen_fallback_model"):
+            model_id = self.config.get(key, "").strip()
+            if model_id:
+                prov = await self.context.provider_manager.get_provider_by_id(model_id)
+                if prov:
+                    return prov
         umo = event.unified_msg_origin if event else None
         return self.context.get_using_provider(umo=umo)
 
@@ -899,7 +910,7 @@ class InviteCodePlugin(Star):
     async def _detect_invite_intent(self, event: AstrMessageEvent, msg: str) -> bool:
         """Return True if the user specifically wants a Linux.Do (L站) invite."""
         try:
-            provider = await self._get_judge_provider(event)
+            provider = await self._get_intent_provider(event)
             if provider:
                 resp = await provider.text_chat(
                     prompt=(

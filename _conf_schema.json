@@ -20,7 +20,10 @@
   "verify_fail_mode": {
     "description": "API 不可用时如何处理",
     "type": "string",
-    "options": ["pass", "reject"],
+    "options": [
+      "pass",
+      "reject"
+    ],
     "default": "pass",
     "hint": "pass=验证失败/API超时/未配置API时仍放行存入；reject=验证失败时拒绝存入，严格模式"
   },
@@ -36,25 +39,53 @@
     "default": 20,
     "hint": "从知识库预生成的题量，每次 /刷新题库 重新生成"
   },
-  "judge_model": {
-    "description": "判断模型（意图识别 + 答案评判）",
+  "intent_model": {
+    "description": "意图识别模型",
     "type": "string",
     "_special": "select_provider",
     "default": "",
-    "hint": "用于意图分类和答案评判的 LLM 模型。留空则使用全局默认提供商"
+    "hint": "用于判断用户是否真心想要 L站 邀请码的 LLM 模型。留空使用全局默认提供商"
+  },
+  "intent_fallback_model": {
+    "description": "意图识别备用模型",
+    "type": "string",
+    "_special": "select_provider",
+    "default": "",
+    "hint": "intent_model 不可用时的备用模型。留空跳过"
+  },
+  "judge_model": {
+    "description": "答案评判模型",
+    "type": "string",
+    "_special": "select_provider",
+    "default": "",
+    "hint": "用于评判用户答案是否正确的 LLM 模型。留空使用全局默认提供商"
+  },
+  "judge_fallback_model": {
+    "description": "答案评判备用模型",
+    "type": "string",
+    "_special": "select_provider",
+    "default": "",
+    "hint": "judge_model 不可用时的备用模型。留空跳过"
   },
   "judge_prompt_template": {
-    "description": "判断模型输出格式模板",
+    "description": "判题输出格式模板",
     "type": "string",
     "default": "只回复 JSON: {\"correct\": true/false, \"feedback\": \"简短评价\"}",
     "hint": "附加到判题 prompt 末尾，指导 LLM 按指定 JSON 格式输出。{correct} 表示是否正确，{feedback} 为评价"
   },
   "question_gen_model": {
-    "description": "出题模型（题库生成）",
+    "description": "出题模型",
     "type": "string",
     "_special": "select_provider",
     "default": "",
-    "hint": "用于从知识库批量生成题目的 LLM 模型。留空则使用全局默认提供商"
+    "hint": "用于从知识库批量生成题目的 LLM 模型。留空使用全局默认提供商"
+  },
+  "question_gen_fallback_model": {
+    "description": "出题备用模型",
+    "type": "string",
+    "_special": "select_provider",
+    "default": "",
+    "hint": "question_gen_model 不可用时的备用模型。留空跳过"
   },
   "question_gen_prompt_template": {
     "description": "出题模型输出格式模板",
@@ -107,7 +138,10 @@
   "delivery_method": {
     "description": "邀请码发送方式",
     "type": "string",
-    "options": ["private_message", "email"],
+    "options": [
+      "private_message",
+      "email"
+    ],
     "default": "private_message",
     "hint": "用户通过验证后的发送方式：private_message 为 QQ 私聊发送，email 为邮件发送"
   },
