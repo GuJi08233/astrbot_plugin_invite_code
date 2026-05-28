@@ -234,6 +234,12 @@ class InviteCodePlugin(Star):
         if not provider:
             return user_answer.strip().lower() in reference_answer.lower(), ""
 
+        # Guard: reject overly short answers before wasting an LLM call.
+        # KB-mode questions are always open-ended and require explanation.
+        stripped = user_answer.strip()
+        if len(stripped) < 5:
+            return False, "回答太短，请详细说明你的观点后再试。"
+
         judge_template = self.config.get("judge_prompt_template", "")
         prompt = (
             f"题目：{question}\n\n"
