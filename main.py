@@ -234,12 +234,6 @@ class InviteCodePlugin(Star):
         if not provider:
             return user_answer.strip().lower() in reference_answer.lower(), ""
 
-        # Guard: reject overly short answers before wasting an LLM call.
-        # KB-mode questions are always open-ended and require explanation.
-        stripped = user_answer.strip()
-        if len(stripped) < 5:
-            return False, "回答太短，请详细说明你的观点后再试。"
-
         judge_template = self.config.get("judge_prompt_template", "")
         prompt = (
             f"题目：{question}\n\n"
@@ -1031,6 +1025,16 @@ class InviteCodePlugin(Star):
                         # 不回复，静默等待，超时自动取消
                         controller.keep(timeout=timeout, reset_timeout=True)
                         return
+
+                # "重试" just re-sends the question without consuming an attempt
+                if text == "重试":
+                    question_prompt = (
+                        f"【{session.invite['name']}】{session.expiry_hint}\n\n"
+                        f"{session.question_text}\n\n直接回复答案，发送「退出」可取消。"
+                    )
+                    await e.send(e.plain_result(question_prompt))
+                    controller.keep(timeout=timeout, reset_timeout=True)
+                    return
 
                 session.attempts += 1
 
