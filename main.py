@@ -26,9 +26,12 @@ from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.utils.session_waiter import SessionController, session_waiter
 
 INVITE_KEYWORDS_REGEX = (
-    r"(邀请码|邀请链接|求邀请码|给个邀请码|有邀请码吗"
-    r"|怎么注册|注册链接|邀请我|求个码|给个码"
-    r"|想要邀请|邀请注册|来个码|求个邀请|求码|给码)"
+    r"(邀请码|邀请链接|邀请注册|社区邀请|论坛邀请|注册码"
+    r"|求邀请码|求个邀请|求邀请|求码|求个码|求链接|求个链接"
+    r"|给个邀请码|给个码|给码|给个邀请|来个码|来个邀请"
+    r"|有邀请码吗|有码吗|还有码吗|有没有码|有没有邀请"
+    r"|想要邀请|想注册|怎么注册|注册链接|邀请我"
+    r"|L\s*站|L站|Linux\s*Do|LinuxDo)"
 )
 
 INVITE_URL_PATTERN = re.compile(
