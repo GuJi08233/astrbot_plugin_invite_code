@@ -31,7 +31,8 @@ INVITE_KEYWORDS_REGEX = (
     r"|给个邀请码|给个码|给码|给个邀请|来个码|来个邀请"
     r"|有邀请码吗|有码吗|还有码吗|有没有码|有没有邀请"
     r"|想要邀请|想注册|怎么注册|注册链接|邀请我"
-    r"|L\s*站|L站|Linux\s*Do|LinuxDo)"
+    r"|L\s*站|L站|Linux\s*Do|LinuxDo"
+    r"|佬友|有佬吗|求个佬|来个佬|有没有佬)"
 )
 
 INVITE_URL_PATTERN = re.compile(
