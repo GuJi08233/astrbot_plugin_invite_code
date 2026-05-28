@@ -10,13 +10,7 @@ import puppeteer from "@cloudflare/puppeteer";
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
-      return new Response(null, {
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type",
-        },
-      });
+      return new Response(null, { headers: corsHeaders() });
     }
 
     if (request.method !== "POST") {
@@ -75,8 +69,8 @@ export default {
 
     if (!env.BROWSER) {
       return Response.json(
-        { valid: true, message: "Browser binding not found", title: "", status: 0 },
-        { headers: corsHeaders() }
+        { valid: false, error: "Browser binding not found", title: "", status: 0 },
+        { status: 503, headers: corsHeaders() }
       );
     }
 
@@ -156,14 +150,16 @@ export default {
       );
     } catch (err) {
       console.error(`Verify error: ${url}`, err);
+      // Surface the failure to caller; Python side decides per verify_fail_mode.
       return Response.json(
         {
-          valid: true,
-          message: `Error, treat as valid: ${err.message}`,
+          valid: false,
+          error: err.message || String(err),
+          message: `Verification failed: ${err.message || err}`,
           title: "",
           status: 0,
         },
-        { headers: corsHeaders() }
+        { status: 502, headers: corsHeaders() }
       );
     }
   },

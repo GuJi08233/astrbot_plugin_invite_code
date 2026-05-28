@@ -1,1 +1,2 @@
 httpx>=0.24
+# Optional: playwright>=1.40 (required when use_worker is off and enable_verify is on)

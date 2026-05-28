@@ -7,7 +7,3 @@ repo: https://github.com/GuJi08233/astrbot_plugin_invite_code
 astrbot_version: ">=4.16,<5"
 support_platforms:
   - aiocqhttp
-  - telegram
-  - lark
-  - discord
-  - slack

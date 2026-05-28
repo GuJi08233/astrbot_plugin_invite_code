@@ -1,17 +1,26 @@
+from __future__ import annotations
+
 import asyncio
 import json
+import os
 import random
 import re
+import secrets
 import smtplib
+import tempfile
 import time
+from dataclasses import dataclass
 from email.mime.text import MIMEText
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from playwright.async_api import Browser, async_playwright
 
 import httpx
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
-from astrbot.core.platform.message_type import MessageType
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.utils.session_waiter import SessionController, session_waiter
 
@@ -37,9 +46,24 @@ SITE_VERIFY_RULES: list[dict] = [
 ]
 
 
+@dataclass
+class ChallengeSession:
+    """Mutable state for a group invite challenge flow."""
+    attempts: int = 0
+    confirm_phase: bool = True
+    invite: dict | None = None
+    question_text: str = ""
+    reference_answer: str = ""
+    correct_answer: str = ""
+    use_kb: bool = False
+    kb_question: dict | None = None
+    expiry_hint: str = ""
+
+
+
 class InviteCodePlugin(Star):
-    _pw: "async_playwright | None" = None
-    _browser: "Browser | None" = None
+    _pw: async_playwright | None = None  # noqa: F821
+    _browser: Browser | None = None  # noqa: F821
 
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
@@ -51,7 +75,11 @@ class InviteCodePlugin(Star):
         self.daily_usage_file = self.data_dir / "daily_usage.json"
         self.invite_codes: list[dict] = []
         self.question_pool: list[dict] = []
-        self._daily_usage: dict[str, set[str]] = {}
+        self._daily_usage: dict[str, dict[str, int]] = {}
+        # LLM-tool 出题会话:challenge_token -> {invite_id, question, reference_answer,
+        # kb_mode, user_id, expires_at}。避免把正确答案/kb_mode 暴露给 LLM 入参往返。
+        self._pending_challenges: dict[str, dict] = {}
+        self._browser_lock: asyncio.Lock = asyncio.Lock()
         self._load_data()
         self._load_question_pool()
         self._load_daily_usage()
@@ -92,9 +120,18 @@ class InviteCodePlugin(Star):
             self.invite_codes = []
 
     def _save_data(self):
+        """Atomically write invite codes to disk via temp file."""
         try:
-            with open(self.data_file, "w", encoding="utf-8") as f:
-                json.dump(self.invite_codes, f, ensure_ascii=False, indent=2)
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                suffix=".json", dir=self.data_dir,
+            )
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    json.dump(self.invite_codes, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, self.data_file)
+            except Exception:
+                os.unlink(tmp_path)
+                raise
         except Exception:
             logger.error("保存邀请码数据失败", exc_info=True)
 
@@ -112,9 +149,18 @@ class InviteCodePlugin(Star):
             self.question_pool = []
 
     def _save_question_pool(self):
+        """Atomically write question pool to disk via temp file."""
         try:
-            with open(self.question_file, "w", encoding="utf-8") as f:
-                json.dump(self.question_pool, f, ensure_ascii=False, indent=2)
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                suffix=".json", dir=self.data_dir,
+            )
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    json.dump(self.question_pool, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, self.question_file)
+            except Exception:
+                os.unlink(tmp_path)
+                raise
         except Exception:
             logger.error("保存题库失败", exc_info=True)
 
@@ -129,9 +175,16 @@ class InviteCodePlugin(Star):
                 with open(self.daily_usage_file, encoding="utf-8") as f:
                     raw = json.load(f)
                 today = self._today_str()
-                self._daily_usage = {
-                    k: set(v) for k, v in raw.items() if k >= today
-                }
+                normalized: dict[str, dict[str, int]] = {}
+                for date_str, val in raw.items():
+                    if date_str < today:
+                        continue
+                    # Backward compat: old format was list[user_id]
+                    if isinstance(val, list):
+                        normalized[date_str] = dict.fromkeys(val, 1)
+                    elif isinstance(val, dict):
+                        normalized[date_str] = {k: int(v) for k, v in val.items()}
+                self._daily_usage = normalized
             except Exception:
                 self._daily_usage = {}
         else:
@@ -140,27 +193,24 @@ class InviteCodePlugin(Star):
     def _save_daily_usage(self):
         try:
             with open(self.daily_usage_file, "w", encoding="utf-8") as f:
-                json.dump(
-                    {k: list(v) for k, v in self._daily_usage.items()},
-                    f, ensure_ascii=False, indent=2,
-                )
+                json.dump(self._daily_usage, f, ensure_ascii=False, indent=2)
         except Exception:
             logger.error("保存每日用量失败", exc_info=True)
 
     def _check_daily_limit(self, user_id: str) -> bool:
-        """检查用户是否超限。返回 True 表示可以继续。"""
+        """检查用户今日是否仍可领取(per-user)。True 表示可继续。"""
         limit = self.config.get("daily_limit", 1)
         if limit <= 0:
             return True
         today = self._today_str()
-        used = self._daily_usage.get(today, set())
-        return len(used) < limit
+        used = self._daily_usage.get(today, {})
+        return used.get(user_id, 0) < limit
 
     def _record_daily_usage(self, user_id: str):
         today = self._today_str()
         if today not in self._daily_usage:
-            self._daily_usage[today] = set()
-        self._daily_usage[today].add(user_id)
+            self._daily_usage[today] = {}
+        self._daily_usage[today][user_id] = self._daily_usage[today].get(user_id, 0) + 1
         self._save_daily_usage()
 
     def _use_kb(self) -> bool:
@@ -189,7 +239,7 @@ class InviteCodePlugin(Star):
             f"- 不要求与评判要点逐字一致，意思正确即可\n"
             f"- 核心观点正确即算通过\n"
             f"- 明显错误、偏题、答非所问算不通过\n"
-            f"- 回答过于简短或敷衍（如仅\"是\"\"对\"而题目要求解释）算不通过\n\n"
+            f'- 回答过于简短或敷衍（如仅"是""对"而题目要求解释）算不通过\n\n'
             f"{judge_template}"
         )
         try:
@@ -225,21 +275,46 @@ class InviteCodePlugin(Star):
             logger.info(f"清理了 {removed} 个已过期的邀请码")
         return removed
 
+    def _cleanup_invalid(self) -> int:
+        """清理已被标记 verified=False 的邀请码。"""
+        before = len(self.invite_codes)
+        self.invite_codes = [e for e in self.invite_codes if e.get("verified") is not False]
+        removed = before - len(self.invite_codes)
+        if removed > 0:
+            self._save_data()
+            logger.info(f"清理了 {removed} 个验证失败的邀请码")
+        return removed
+
     async def _periodic_cleanup(self):
         while True:
             try:
                 await asyncio.sleep(600)
                 self._cleanup_expired()
+                if self.config.get("enable_verify", True):
+                    self._cleanup_invalid()
             except asyncio.CancelledError:
                 return
             except Exception:
                 logger.warning("定期清理失败", exc_info=True)
 
     def _pick_random_invite(self) -> dict | None:
-        valid = [e for e in self.invite_codes if not self._is_expired(e)]
+        valid = [
+            e for e in self.invite_codes
+            if not self._is_expired(e) and e.get("verified") is not False
+        ]
         if not valid:
             return None
         return random.choice(valid)
+
+    def _consume_invite(self, invite_id: int) -> bool:
+        """发放后从池中移除,避免一次性邀请链接被反复发放。"""
+        for i, entry in enumerate(self.invite_codes):
+            if entry["id"] == invite_id:
+                self.invite_codes.pop(i)
+                self._save_data()
+                logger.info(f"邀请码 ID={invite_id} 已发放,从池中移除")
+                return True
+        return False
 
     def _get_invite_by_id(self, invite_id: int) -> dict | None:
         for entry in self.invite_codes:
@@ -266,6 +341,15 @@ class InviteCodePlugin(Star):
     def _make_private_umo(event: AstrMessageEvent) -> str:
         return f"{event.get_platform_name()}:friend:{event.get_sender_id()}"
 
+    async def _resolve_email(self, event: AstrMessageEvent) -> str | None:
+        """根据平台推断收件邮箱。
+        - aiocqhttp(QQ): 默认 {sender_id}@qq.com
+        - 其他平台: 无法可靠推断,返回 None,由调用方处理。
+        """
+        if event.get_platform_name() == "aiocqhttp":
+            return f"{event.get_sender_id()}@qq.com"
+        return None
+
     # ========== Browser & Verification ==========
 
     async def _get_judge_provider(self, event: AstrMessageEvent | None = None):
@@ -291,10 +375,13 @@ class InviteCodePlugin(Star):
         return self.context.get_using_provider(umo=umo)
 
     async def _get_browser(self):
-        if self._browser is None:
-            from playwright.async_api import async_playwright
-            self._pw = await async_playwright().start()
-            self._browser = await self._pw.chromium.launch(headless=True)
+        if self._browser is not None:
+            return self._browser
+        async with self._browser_lock:
+            if self._browser is None:
+                from playwright.async_api import async_playwright
+                self._pw = await async_playwright().start()
+                self._browser = await self._pw.chromium.launch(headless=True)
         return self._browser
 
     def _detect_site_rule(self, url: str) -> dict | None:
@@ -308,10 +395,16 @@ class InviteCodePlugin(Star):
         return self.config.get("verify_fail_mode", "pass") == "pass"
 
     async def _verify_invite_link(self, url: str) -> tuple[bool, str]:
-        """验证邀请链接是否有效。use_worker 开启时走外部 API；关闭时使用内置 Playwright。"""
+        """验证邀请链接是否有效。use_worker 开启时走外部 API;关闭时使用内置 Playwright。"""
         rule = self._detect_site_rule(url)
         if not rule:
-            return True, "未匹配已知站点规则，当作有效处理"
+            # 未匹配已知站点规则:按 verify_fail_mode 决定,避免任意 URL 被静默放行
+            ok = self._verify_fail_open()
+            return ok, (
+                "未匹配已知站点规则,当作有效处理"
+                if ok
+                else "未匹配已知站点规则,拒绝存入(verify_fail_mode=reject)"
+            )
 
         use_worker = self.config.get("use_worker", True)
         if use_worker:
@@ -397,7 +490,6 @@ class InviteCodePlugin(Star):
             logger.warning(f"链接验证异常: {e}")
             ok = self._verify_fail_open()
             return ok, f"验证异常，{'当作有效处理' if ok else '拒绝存入'}: {e}"
-            return True, f"验证异常，当作有效处理: {e}"
 
     async def _generate_question_pool(self, event: AstrMessageEvent | None = None):
         """从知识库检索内容，用 LLM 批量生成验证题目。"""
@@ -464,13 +556,12 @@ class InviteCodePlugin(Star):
             if not isinstance(questions, list):
                 return 0, f"LLM 返回格式异常: {type(questions)}"
 
-            # 分配 ID
-            max_id = max((q["id"] for q in self.question_pool), default=0)
-            for i, q in enumerate(questions):
-                q["id"] = max_id + i + 1
+            # 整体替换题库,ID 从 1 起重新编号
+            for i, q in enumerate(questions, start=1):
+                q["id"] = i
                 if "type" not in q:
                     q["type"] = "knowledge"
-                # reference_answer 保持原文不 lower，给 LLM 判题用
+                # reference_answer 保持原文不 lower,给 LLM 判题用
                 q["reference_answer"] = q.get("reference_answer", q.get("answer", ""))
 
             self.question_pool = questions
@@ -607,17 +698,65 @@ class InviteCodePlugin(Star):
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("存入邀请码")
-    async def add_invite_code(
-        self, event: AstrMessageEvent, name: str, code: str, question: str, answer: str
-    ):
-        """存入邀请码（永不过期）。用法: /存入邀请码 <名称> <链接> <问题> <答案>"""
+    async def add_invite_code(self, event: AstrMessageEvent):
+        """多步交互存入邀请码(永不过期)。命令解析按空格切分,问题/答案常含空格,
+        因此改为依次提问:名称 → 链接 → 问题 → 答案。发送「取消」退出。"""
+        timeout = self.config.get("session_timeout", 120)
+        admin_id = event.get_sender_id()
+        steps = [
+            ("name", "请输入邀请码名称(发送「取消」退出):"),
+            ("code", "请输入邀请链接:"),
+            ("question", "请输入验证问题(可包含空格):"),
+            ("answer", "请输入正确答案(可包含空格):"),
+        ]
+        collected: dict[str, str] = {}
+
+        yield event.plain_result(steps[0][1])
+
+        try:
+            @session_waiter(timeout=timeout)
+            async def waiter(controller: SessionController, e: AstrMessageEvent):
+                if e.get_sender_id() != admin_id:
+                    controller.keep(timeout=timeout, reset_timeout=True)
+                    return
+                text = e.message_str.strip()
+                if not text:
+                    controller.keep(timeout=timeout, reset_timeout=True)
+                    return
+                if text == "取消":
+                    await e.send(e.plain_result("已取消存入。"))
+                    controller.stop()
+                    return
+
+                idx = len(collected)
+                key, _ = steps[idx]
+                collected[key] = text
+
+                if idx + 1 < len(steps):
+                    await e.send(e.plain_result(steps[idx + 1][1]))
+                    controller.keep(timeout=timeout, reset_timeout=True)
+                    return
+                controller.stop()
+
+            await waiter(event)
+        except TimeoutError:
+            yield event.plain_result("存入超时,请重新发起。")
+            return
+        except Exception as exc:
+            logger.error(f"/存入邀请码 交互异常: {exc}", exc_info=True)
+            yield event.plain_result("存入流程出错。")
+            return
+
+        if len(collected) < len(steps):
+            return
+
         new_id = max((e["id"] for e in self.invite_codes), default=0) + 1
         entry = {
             "id": new_id,
-            "name": name.strip(),
-            "code": code.strip(),
-            "question": question.strip(),
-            "answer": answer.strip().lower(),
+            "name": collected["name"],
+            "code": collected["code"],
+            "question": collected["question"],
+            "answer": collected["answer"].strip().lower(),
             "expires_at": None,
             "source": "admin",
             "contributor": event.get_sender_id(),
@@ -627,7 +766,8 @@ class InviteCodePlugin(Star):
         self.invite_codes.append(entry)
         self._save_data()
         yield event.plain_result(
-            f"邀请码已存入（永不过期）！\nID: {new_id}\n名称: {name}\n问题: {question}"
+            f"邀请码已存入(永不过期)!\n"
+            f"ID: {new_id}\n名称: {entry['name']}\n问题: {entry['question']}"
         )
 
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -679,7 +819,7 @@ class InviteCodePlugin(Star):
         if not self.invite_codes:
             yield event.plain_result("暂无可用的邀请码。")
             return
-        is_group = event.get_message_type() == MessageType.GROUP_MESSAGE
+        is_group = event.get_message_type().value == "group_message"
         lines = []
         for e in self.invite_codes:
             expired = "已过期" if self._is_expired(e) else self._format_expiry(e)
@@ -706,14 +846,11 @@ class InviteCodePlugin(Star):
         expired_count = self._cleanup_expired()
         invalid_count = 0
         if self.config.get("enable_verify", True):
-            before = len(self.invite_codes)
-            self.invite_codes = [e for e in self.invite_codes if e.get("verified") is not False]
-            invalid_count = before - len(self.invite_codes)
-            self._save_data()
+            invalid_count = self._cleanup_invalid()
         total = expired_count + invalid_count
         yield event.plain_result(
-            f"已清理 {expired_count} 个过期 + {invalid_count} 个无效邀请码，"
-            f"共 {total} 个，剩余 {len(self.invite_codes)} 个。"
+            f"已清理 {expired_count} 个过期 + {invalid_count} 个无效邀请码,"
+            f"共 {total} 个,剩余 {len(self.invite_codes)} 个。"
         )
 
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -730,19 +867,8 @@ class InviteCodePlugin(Star):
         else:
             yield event.plain_result(f"题库已刷新，共 {count} 题。")
 
-    # ========== Group Keyword Detection ==========
-
-    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
-    @filter.regex(INVITE_KEYWORDS_REGEX)
-    async def on_group_ask_invite(self, event: AstrMessageEvent):
-        """检测到群成员提到邀请码相关词汇，交 LLM 判断意图后再决定是否启动问答。"""
-        if event.get_sender_id() == event.get_self_id():
-            return
-        msg = event.message_str.strip()
-        if msg.startswith(("/", "!", "#", "！")) or msg.startswith("邀请码"):
-            return
-
-        # LLM 意图判断：是真心在求邀请码，还是只是讨论交流
+    async def _detect_invite_intent(self, event: AstrMessageEvent, msg: str) -> bool:
+        """Return True if the user genuinely wants an invite code (not just chatting)."""
         try:
             provider = await self._get_judge_provider(event)
             if provider:
@@ -756,10 +882,25 @@ class InviteCodePlugin(Star):
                 )
                 intent = resp.completion_text.strip()
                 logger.debug(f"邀请码意图判断: msg={msg[:50]} intent={intent}")
-                if "否" in intent or "不是" in intent:
-                    return
+                return "否" not in intent and "不是" not in intent
         except Exception as e:
             logger.debug(f"意图判断失败，回退到直接触发: {e}")
+        return True
+
+    # ========== Group Keyword Detection ==========
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    @filter.regex(INVITE_KEYWORDS_REGEX)
+    async def on_group_ask_invite(self, event: AstrMessageEvent):
+        """检测到群成员提到邀请码相关词汇，交 LLM 判断意图后再决定是否启动问答。"""
+        if event.get_sender_id() == event.get_self_id():
+            return
+        msg = event.message_str.strip()
+        if msg.startswith(("/", "!", "#", "！")) or msg.startswith("邀请码"):
+            return
+
+        if not await self._detect_invite_intent(event, msg):
+            return
 
         if not self._check_daily_limit(event.get_sender_id()):
             yield event.plain_result("你今天已经获取过邀请码了，明天再来吧。")
@@ -783,8 +924,6 @@ class InviteCodePlugin(Star):
         timeout = self.config.get("session_timeout", 120)
         retry_limit = self.config.get("allow_retry", 3)
         delivery = self.config.get("delivery_method", "private_message")
-        attempts = 0
-        confirm_phase = True
 
         expiry_hint = (
             f"（{self._format_expiry(invite)}）" if invite.get("expires_at") else ""
@@ -792,9 +931,21 @@ class InviteCodePlugin(Star):
         if kb_question:
             question_text = kb_question["question"]
             reference_answer = kb_question.get("reference_answer", "")
+            correct_answer = ""
         else:
             question_text = invite.get("question", self.config.get("default_question", ""))
             correct_answer = invite.get("answer", self.config.get("default_answer", "L站")).strip().lower()
+            reference_answer = ""
+
+        session = ChallengeSession(
+            invite=invite,
+            question_text=question_text,
+            reference_answer=reference_answer,
+            correct_answer=correct_answer,
+            use_kb=use_kb,
+            kb_question=kb_question,
+            expiry_hint=expiry_hint,
+        )
 
         confirm_prompt = (
             "检测到你可能需要 Linux.Do 邀请码，"
@@ -808,8 +959,7 @@ class InviteCodePlugin(Star):
 
             @session_waiter(timeout=timeout)
             async def waiter(controller: SessionController, e: AstrMessageEvent):
-                nonlocal attempts, confirm_phase, invite, question_text, kb_question
-                nonlocal reference_answer, correct_answer, use_kb, expiry_hint
+                nonlocal session
 
                 # 只响应发起者，忽略其他人
                 if e.get_sender_id() != sender_id:
@@ -827,12 +977,12 @@ class InviteCodePlugin(Star):
                     return
 
                 # Phase 1: 确认是否要答题
-                if confirm_phase:
+                if session.confirm_phase:
                     if text in ("是", "要", "好", "yes", "y", "ok", "嗯", "对", "可以"):
-                        confirm_phase = False
+                        session.confirm_phase = False
                         question_prompt = (
-                            f"【{invite['name']}】{expiry_hint}\n\n"
-                            f"{question_text}\n\n直接回复答案，发送「退出」可取消。"
+                            f"【{session.invite['name']}】{session.expiry_hint}\n\n"
+                            f"{session.question_text}\n\n直接回复答案，发送「退出」可取消。"
                         )
                         await e.send(e.plain_result(question_prompt))
                         controller.keep(timeout=timeout, reset_timeout=True)
@@ -842,23 +992,23 @@ class InviteCodePlugin(Star):
                         controller.keep(timeout=timeout, reset_timeout=True)
                         return
 
-                attempts += 1
+                session.attempts += 1
 
                 # KB 模式：LLM 判题；非 KB 模式：字符串匹配
                 passed = False
                 judge_feedback = ""
-                if use_kb:
+                if session.use_kb:
                     await e.send(e.plain_result("正在评判你的回答..."))
                     passed, judge_feedback = await self._judge_answer(
-                        e, question_text, reference_answer, text,
+                        e, session.question_text, session.reference_answer, text,
                     )
                     if judge_feedback:
                         await e.send(e.plain_result(judge_feedback))
                 else:
-                    passed = text.lower() == correct_answer
+                    passed = text.lower() == session.correct_answer
 
                 if passed:
-                    if self._is_expired(invite):
+                    if self._is_expired(session.invite):
                         await e.send(e.plain_result("抱歉，这个邀请码刚刚过期了。"))
                         controller.stop()
                         return
@@ -867,28 +1017,28 @@ class InviteCodePlugin(Star):
                     enable_verify = self.config.get("enable_verify", True)
                     if enable_verify:
                         await e.send(e.plain_result("回答正确，正在验证链接有效性..."))
-                        is_valid, verify_msg = await self._verify_invite_link(invite["code"])
+                        is_valid, verify_msg = await self._verify_invite_link(session.invite["code"])
                         if not is_valid:
-                            invite["verified"] = False
-                            invite["verify_msg"] = verify_msg
+                            session.invite["verified"] = False
+                            session.invite["verify_msg"] = verify_msg
                             self._save_data()
                             new_invite = self._pick_random_invite()
-                            if new_invite and new_invite["id"] != invite["id"]:
-                                invite = new_invite
-                                attempts = 0
-                                confirm_phase = True
+                            if new_invite and new_invite["id"] != session.invite["id"]:
+                                session.invite = new_invite
+                                session.attempts = 0
+                                session.confirm_phase = True
                                 # 换题
-                                if use_kb:
-                                    kb_question = self._pick_question()
-                                if kb_question:
-                                    question_text = kb_question["question"]
-                                    reference_answer = kb_question.get("reference_answer", "")
+                                if session.use_kb:
+                                    session.kb_question = self._pick_question()
+                                if session.kb_question:
+                                    session.question_text = session.kb_question["question"]
+                                    session.reference_answer = session.kb_question.get("reference_answer", "")
                                 else:
-                                    question_text = invite.get("question", self.config.get("default_question", ""))
-                                    correct_answer = invite.get("answer", self.config.get("default_answer", "L站")).strip().lower()
-                                expiry_hint = (
-                                    f"（{self._format_expiry(invite)}）"
-                                    if invite.get("expires_at") else ""
+                                    session.question_text = session.invite.get("question", self.config.get("default_question", ""))
+                                    session.correct_answer = session.invite.get("answer", self.config.get("default_answer", "L站")).strip().lower()
+                                session.expiry_hint = (
+                                    f"（{self._format_expiry(session.invite)}）"
+                                    if session.invite.get("expires_at") else ""
                                 )
                                 await e.send(e.plain_result(
                                     f"该邀请链接已失效（{verify_msg}），为你更换另一个。\n\n"
@@ -904,37 +1054,45 @@ class InviteCodePlugin(Star):
                             return
 
                     if delivery == "email":
-                        qq_email = f"{e.get_sender_id()}@qq.com"
+                        target_email = await self._resolve_email(e)
+                        if not target_email:
+                            await e.send(e.plain_result(
+                                "无法确定收件邮箱:当前平台不支持自动推断,请联系管理员调整 delivery_method。"
+                            ))
+                            controller.stop()
+                            return
                         try:
-                            await self._send_email(qq_email, invite["code"], invite["name"])
+                            await self._send_email(target_email, session.invite["code"], session.invite["name"])
                             self._record_daily_usage(e.get_sender_id())
-                            await e.send(e.plain_result(f"回答正确！邀请码已发送到 {qq_email}，请查收。"))
+                            self._consume_invite(session.invite["id"])
+                            await e.send(e.plain_result(f"回答正确!邀请码已发送到 {target_email},请查收。"))
                         except Exception as exc:
                             logger.error(f"邮件发送失败: {exc}")
                             await e.send(e.plain_result(f"邮件发送失败: {exc}"))
                         controller.stop()
                         return
 
-                    await e.send(e.plain_result("回答正确，正在私发邀请码，请查看私聊。"))
+                    await e.send(e.plain_result("回答正确,正在私发邀请码,请查看私聊。"))
                     try:
-                        await self._send_private_msg(e, invite["code"], invite["name"])
+                        await self._send_private_msg(e, session.invite["code"], session.invite["name"])
                         self._record_daily_usage(e.get_sender_id())
+                        self._consume_invite(session.invite["id"])
                     except Exception:
                         await e.send(e.plain_result(
-                            "私发失败，请确认已添加机器人为好友，或联系管理员。"
+                            "私发失败,请确认已添加机器人为好友,或联系管理员。"
                         ))
                     controller.stop()
                     return
 
-                remaining = retry_limit - attempts if retry_limit > 0 else None
+                remaining = retry_limit - session.attempts if retry_limit > 0 else None
                 if retry_limit > 0 and remaining <= 0:
-                    if use_kb:
+                    if session.use_kb:
                         await e.send(e.plain_result(
                             "已达最大重试次数。请重新发送关键词发起新请求。"
                         ))
                     else:
                         await e.send(e.plain_result(
-                            f"回答错误，已达最大重试次数。正确答案是「{correct_answer}」。"
+                            f"回答错误，已达最大重试次数。正确答案是「{session.session.correct_answer}」。"
                             f"请重新发送关键词发起新请求。"
                         ))
                     controller.stop()
@@ -945,10 +1103,10 @@ class InviteCodePlugin(Star):
 
             await waiter(event)
         except TimeoutError:
-            if use_kb:
+            if session.use_kb:
                 yield event.plain_result("验证超时，请重新发送关键词发起新请求。")
             else:
-                yield event.plain_result(f"验证超时。正确答案是「{correct_answer}」。")
+                yield event.plain_result(f"验证超时。正确答案是「{session.correct_answer}」。")
         except Exception as exc:
             logger.error(f"邀请码验证流程异常: {exc}", exc_info=True)
             yield event.plain_result("验证流程出错，请稍后再试。")
@@ -957,78 +1115,116 @@ class InviteCodePlugin(Star):
 
     # ========== LLM Tool: Get Invite Question ==========
 
+    def _new_challenge_token(self) -> str:
+        return secrets.token_urlsafe(16)
+
+    def _gc_pending_challenges(self):
+        now = self._now_ts()
+        for tok in list(self._pending_challenges.keys()):
+            if self._pending_challenges[tok].get("expires_at", 0) < now:
+                self._pending_challenges.pop(tok, None)
+
     @filter.llm_tool(name="get_invite_question")
     async def llm_get_invite_question(self, event: AstrMessageEvent):
-        """获取一个随机邀请码和对应的验证问题。当用户想要注册链接或邀请码时调用。
-        返回的 expected_answer 需要传给 check_invite_answer 用于验证。"""
+        """Get a random invite code challenge question for the current user.
+
+        Call this when a user asks for a registration link or invite code.
+        The returned JSON contains:
+        - challenge_token (str): session token to pass to check_invite_answer
+        - name (str): human-readable name of the invite
+        - question (str): the verification question to ask the user
+        - expires_at (float|None): UNIX timestamp when the invite expires
+        - instructions (str): guidance for the LLM on what to do next
+
+        DO NOT try to guess or infer the answer. Always call check_invite_answer
+        with the user's response and the challenge_token.
+        """
         self._cleanup_expired()
+        self._gc_pending_challenges()
         invite = self._pick_random_invite()
         if not invite:
             return "暂无可用的邀请码。引导用户私聊机器人发送邀请链接。"
 
-        if self._use_kb():
+        use_kb = self._use_kb()
+        if use_kb:
             kb_question = self._pick_question()
             if not kb_question:
-                return "题库为空，请联系管理员使用「/刷新题库」生成题目。"
+                return "题库为空,请联系管理员使用「/刷新题库」生成题目。"
             question = kb_question["question"]
             reference = kb_question.get("reference_answer", "")
-            return json.dumps(
-                {
-                    "invite_id": invite["id"],
-                    "name": invite["name"],
-                    "question": question,
-                    "reference_answer": reference,
-                    "kb_mode": True,
-                    "expires_at": invite.get("expires_at"),
-                },
-                ensure_ascii=False,
-            )
         else:
             question = invite.get("question", self.config.get("default_question", ""))
-            expected_answer = invite.get("answer", self.config.get("default_answer", "L站")).strip().lower()
-            return json.dumps(
-                {
-                    "invite_id": invite["id"],
-                    "name": invite["name"],
-                    "question": question,
-                    "expected_answer": expected_answer,
-                    "kb_mode": False,
-                    "expires_at": invite.get("expires_at"),
-                },
-                ensure_ascii=False,
-            )
+            reference = invite.get("answer", self.config.get("default_answer", "L站"))
+
+        token = self._new_challenge_token()
+        ttl = max(int(self.config.get("session_timeout", 120)), 60)
+        self._pending_challenges[token] = {
+            "invite_id": invite["id"],
+            "question": question,
+            "reference_answer": reference,
+            "kb_mode": use_kb,
+            "user_id": event.get_sender_id(),
+            "expires_at": self._now_ts() + ttl,
+        }
+        return json.dumps(
+            {
+                "challenge_token": token,
+                "name": invite["name"],
+                "question": question,
+                "expires_at": invite.get("expires_at"),
+                "instructions": (
+                    "向用户提问 question 字段内容,等待用户回答后,调用 check_invite_answer "
+                    "并把 challenge_token 与用户原话作为 answer 传入。不要自行判断对错。"
+                ),
+            },
+            ensure_ascii=False,
+        )
 
     # ========== LLM Tool: Check Answer & Deliver ==========
 
     @filter.llm_tool(name="check_invite_answer")
     async def llm_check_invite_answer(
-        self, event: AstrMessageEvent, invite_id: int, answer: str,
-        expected_answer: str = "", kb_mode: bool = False, question: str = "",
+        self, event: AstrMessageEvent, challenge_token: str, answer: str,
     ):
-        """验证用户对邀请码问题的回答，正确则私发邀请码。
+        """Validate the user's answer and deliver the invite code if correct.
 
         Args:
-            invite_id(int): 邀请码ID
-            answer(string): 用户给出的回答
-            expected_answer(string): 期望答案（kb_mode=False时用于字符串匹配）
-            kb_mode(bool): 是否知识库出题模式
-            question(string): 题目原文（kb_mode=True时用于LLM判题）
-        """
-        invite = self._get_invite_by_id(invite_id)
-        if not invite:
-            return "错误：该邀请码不存在或已过期，请重新调用 get_invite_question。"
+            challenge_token (str): session token from get_invite_question
+            answer (str): the user's verbatim response to the challenge question
 
-        if kb_mode and question:
-            passed, feedback = await self._judge_answer(
-                event, question, expected_answer, answer,
-            )
+        Returns:
+            str: feedback message. On success, the invite code is sent to the
+                 user via private message or email (depending on config).
+                 On failure, describes what went wrong.
+        """
+        self._gc_pending_challenges()
+        challenge = self._pending_challenges.get(challenge_token)
+        if not challenge:
+            return "challenge_token 无效或已过期,请重新调用 get_invite_question。"
+        if challenge.get("user_id") and challenge["user_id"] != event.get_sender_id():
+            return "该 challenge_token 不属于当前用户,请重新调用 get_invite_question。"
+
+        invite = self._get_invite_by_id(challenge["invite_id"])
+        if not invite:
+            self._pending_challenges.pop(challenge_token, None)
+            return "该邀请码不存在或已过期,请重新调用 get_invite_question。"
+
+        kb_mode = challenge["kb_mode"]
+        question = challenge["question"]
+        reference = challenge["reference_answer"]
+
+        if kb_mode:
+            passed, feedback = await self._judge_answer(event, question, reference, answer)
             if not passed:
-                return feedback or "回答错误，请引导用户再试一次。"
-        elif answer.strip().lower() != expected_answer.strip().lower():
-            return "回答错误，请引导用户再试一次。"
+                return feedback or "回答错误,请引导用户再试一次。"
+        elif answer.strip().lower() != reference.strip().lower():
+            return "回答错误,请引导用户再试一次。"
+
+        # 答对即消耗 token
+        self._pending_challenges.pop(challenge_token, None)
 
         if self._is_expired(invite):
-            return "该邀请码已过期，请重新调用 get_invite_question。"
+            return "该邀请码已过期,请重新调用 get_invite_question。"
 
         # 发放前二次验证
         enable_verify = self.config.get("enable_verify", True)
@@ -1039,30 +1235,36 @@ class InviteCodePlugin(Star):
                 invite["verify_msg"] = verify_msg
                 self._save_data()
                 new_invite = self._pick_random_invite()
-                if new_invite and new_invite["id"] != invite_id:
-                    return json.dumps(
-                        {
-                            "action": "retry",
-                            "id": new_invite["id"],
-                            "name": new_invite["name"],
-                            "question": new_invite["question"],
-                            "message": f"该链接已失效（{verify_msg}），已更换另一个，请重新提问。",
-                        },
-                        ensure_ascii=False,
+                if new_invite and new_invite["id"] != invite["id"]:
+                    return (
+                        f"该链接已失效({verify_msg}),已自动剔除。"
+                        f"请重新调用 get_invite_question 获取新题目。"
                     )
-                return "该链接已失效，且暂无其他可用邀请码。"
+                return "该链接已失效,且暂无其他可用邀请码。"
 
         delivery = self.config.get("delivery_method", "private_message")
         if delivery == "email":
-            return (
-                "回答正确，但当前配置为邮箱发送。请引导用户提供邮箱地址，"
-                "或由管理员通过私聊手动发送。"
-            )
+            target_email = await self._resolve_email(event)
+            if not target_email:
+                return (
+                    "回答正确,但当前配置为邮箱发送且当前平台无法自动推断邮箱。"
+                    "请引导用户提供邮箱地址,或由管理员通过私聊手动发送。"
+                )
+            try:
+                await self._send_email(target_email, invite["code"], invite["name"])
+                self._record_daily_usage(event.get_sender_id())
+                self._consume_invite(invite["id"])
+                return f"邀请码已发送至 {target_email},请告知用户查收邮件。"
+            except Exception as exc:
+                logger.error(f"LLM tool 邮件发送失败: {exc}")
+                return f"邮件发送失败: {exc}。请告知用户联系管理员。"
 
         try:
             await self._send_private_msg(event, invite["code"], invite["name"])
+            self._record_daily_usage(event.get_sender_id())
+            self._consume_invite(invite["id"])
         except Exception as exc:
             logger.error(f"LLM tool 私发邀请码失败: {exc}")
             return f"私发失败: {exc}。请告知用户确认已添加机器人为好友。"
 
-        return "邀请码已通过私聊发送给用户，请告知用户查看私聊。"
+        return "邀请码已通过私聊发送给用户,请告知用户查看私聊。"
