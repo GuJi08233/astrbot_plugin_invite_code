@@ -11,6 +11,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from email.mime.text import MIMEText
+from email.utils import formataddr
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -616,7 +617,7 @@ class InviteCodePlugin(Star):
             "utf-8",
         )
         msg["Subject"] = f"邀请码【{name}】"
-        msg["From"] = f"{from_name} <{user}>"
+        msg["From"] = formataddr((from_name, user))
         msg["To"] = to_email
 
         def _sync_send():
