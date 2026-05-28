@@ -86,6 +86,7 @@ class InviteCodePlugin(Star):
         self._pending_challenges: dict[str, dict] = {}
         self._browser_lock: asyncio.Lock = asyncio.Lock()
         self._locked_invites: set[int] = set()  # invite IDs currently being challenged
+        self._question_pool_refilling: bool = False
         self._load_data()
         self._load_question_pool()
         self._load_daily_usage()
@@ -222,6 +223,23 @@ class InviteCodePlugin(Star):
     def _use_kb(self) -> bool:
         kb_names = self.config.get("kb_names", [])
         return bool(kb_names)
+
+    async def _trigger_question_pool_refill(self, event: AstrMessageEvent | None = None):
+        """Auto-refill question pool in background if below minimum."""
+        if self._question_pool_refilling:
+            return
+        min_size = self.config.get("question_pool_min_size", 5)
+        if len(self.question_pool) >= min_size:
+            return
+        self._question_pool_refilling = True
+        try:
+            count, err = await self._generate_question_pool(event)
+            if err:
+                logger.warning(f"题库自动补充失败: {err}")
+            elif count > 0:
+                logger.info(f"题库自动补充完成，共 {count} 题")
+        finally:
+            self._question_pool_refilling = False
 
     def _pick_question(self) -> dict | None:
         if not self.question_pool:
@@ -972,7 +990,8 @@ class InviteCodePlugin(Star):
             if count > 0:
                 kb_question = self._pick_question()
 
-        timeout = self.config.get("session_timeout", 120)
+        confirm_timeout = self.config.get("confirm_timeout", 10)
+        answer_timeout = self.config.get("answer_timeout", 90)
         retry_limit = self.config.get("allow_retry", 3)
         delivery = self.config.get("delivery_method", "private_message")
 
@@ -1008,18 +1027,18 @@ class InviteCodePlugin(Star):
 
         try:
 
-            @session_waiter(timeout=timeout)
+            @session_waiter(timeout=confirm_timeout)
             async def waiter(controller: SessionController, e: AstrMessageEvent):
                 nonlocal session
 
                 # 只响应发起者，忽略其他人
                 if e.get_sender_id() != sender_id:
-                    controller.keep(timeout=timeout, reset_timeout=True)
+                    controller.keep(timeout=answer_timeout, reset_timeout=True)
                     return
 
                 text = e.message_str.strip()
                 if not text:
-                    controller.keep(timeout=timeout, reset_timeout=True)
+                    controller.keep(timeout=answer_timeout, reset_timeout=True)
                     return
 
                 if text == "退出":
@@ -1031,16 +1050,19 @@ class InviteCodePlugin(Star):
                 if session.confirm_phase:
                     if text in ("是", "要", "好", "yes", "y", "ok", "嗯", "对", "可以"):
                         session.confirm_phase = False
+                        # Trigger auto-refill if KB pool is low
+                        if session.use_kb:
+                            asyncio.create_task(self._trigger_question_pool_refill(e))
                         question_prompt = (
                             f"【{session.invite['name']}】{session.expiry_hint}\n\n"
                             f"{session.question_text}\n\n直接回复答案，发送「退出」可取消。"
                         )
                         await e.send(e.plain_result(question_prompt))
-                        controller.keep(timeout=timeout, reset_timeout=True)
+                        controller.keep(timeout=answer_timeout, reset_timeout=True)
                         return
                     else:
                         # 不回复，静默等待，超时自动取消
-                        controller.keep(timeout=timeout, reset_timeout=True)
+                        controller.keep(timeout=answer_timeout, reset_timeout=True)
                         return
 
                 # "重试" just re-sends the question without consuming an attempt
@@ -1050,7 +1072,7 @@ class InviteCodePlugin(Star):
                         f"{session.question_text}\n\n直接回复答案，发送「退出」可取消。"
                     )
                     await e.send(e.plain_result(question_prompt))
-                    controller.keep(timeout=timeout, reset_timeout=True)
+                    controller.keep(timeout=answer_timeout, reset_timeout=True)
                     return
 
                 session.attempts += 1
@@ -1106,7 +1128,7 @@ class InviteCodePlugin(Star):
                                     "检测到你可能需要 Linux.Do 邀请码，"
                                     "是否要答题获取？回复「是」开始，回复「退出」取消。"
                                 ))
-                                controller.keep(timeout=timeout, reset_timeout=True)
+                                controller.keep(timeout=answer_timeout, reset_timeout=True)
                                 return
                             await e.send(e.plain_result(
                                 f"该邀请链接已失效（{verify_msg}），且暂无其他可用邀请码。"
@@ -1224,7 +1246,7 @@ class InviteCodePlugin(Star):
             reference = invite.get("answer", self.config.get("default_answer", "L站"))
 
         token = self._new_challenge_token()
-        ttl = max(int(self.config.get("session_timeout", 120)), 60)
+        ttl = max(int(self.config.get("answer_timeout", 90) + 30), 60)
         self._pending_challenges[token] = {
             "invite_id": invite["id"],
             "question": question,

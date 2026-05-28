@@ -123,17 +123,29 @@
     "default": 3,
     "hint": "用户回答错误时允许重试的次数，0 表示不限制"
   },
+  "confirm_timeout": {
+    "description": "确认超时(秒)",
+    "type": "int",
+    "default": 10,
+    "hint": "询问是否进行答题的确认阶段超时时间"
+  },
+  "answer_timeout": {
+    "description": "答题超时(秒)",
+    "type": "int",
+    "default": 90,
+    "hint": "用户答题阶段的超时时间"
+  },
+  "question_pool_min_size": {
+    "description": "题库最低存量",
+    "type": "int",
+    "default": 5,
+    "hint": "当题库低于此数量时，每次出题后自动补充满（仅知识库模式生效）"
+  },
   "daily_limit": {
     "description": "每人每天邀请码获取上限",
     "type": "int",
     "default": 1,
     "hint": "每人每天最多通过问答获取邀请码的次数，0 表示不限制"
-  },
-  "session_timeout": {
-    "description": "会话超时(秒)",
-    "type": "int",
-    "default": 120,
-    "hint": "验证问答会话的超时时间"
   },
   "delivery_method": {
     "description": "邀请码发送方式",
