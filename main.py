@@ -873,6 +873,23 @@ class InviteCodePlugin(Star):
         else:
             yield event.plain_result(f"题库已刷新，共 {count} 题。")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("重置每日限额")
+    async def reset_daily_usage_cmd(self, event: AstrMessageEvent, user_id: str = ""):
+        """重置每日邀请码领取记录。用法: /重置每日限额 <QQ号>，留空重置全部。"""
+        if user_id:
+            today = self._today_str()
+            if today in self._daily_usage and user_id in self._daily_usage[today]:
+                del self._daily_usage[today][user_id]
+                self._save_daily_usage()
+                yield event.plain_result(f"已重置用户 {user_id} 的每日限额。")
+            else:
+                yield event.plain_result(f"用户 {user_id} 今日无领取记录。")
+        else:
+            self._daily_usage = {}
+            self._save_daily_usage()
+            yield event.plain_result("已清空所有每日限额记录。")
+
     async def _detect_invite_intent(self, event: AstrMessageEvent, msg: str) -> bool:
         """Return True if the user genuinely wants an invite code (not just chatting)."""
         try:
