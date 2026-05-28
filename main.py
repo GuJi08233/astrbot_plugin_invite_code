@@ -84,6 +84,7 @@ class InviteCodePlugin(Star):
         # kb_mode, user_id, expires_at}。避免把正确答案/kb_mode 暴露给 LLM 入参往返。
         self._pending_challenges: dict[str, dict] = {}
         self._browser_lock: asyncio.Lock = asyncio.Lock()
+        self._locked_invites: set[int] = set()  # invite IDs currently being challenged
         self._load_data()
         self._load_question_pool()
         self._load_daily_usage()
@@ -304,7 +305,9 @@ class InviteCodePlugin(Star):
     def _pick_random_invite(self) -> dict | None:
         valid = [
             e for e in self.invite_codes
-            if not self._is_expired(e) and e.get("verified") is not False
+            if not self._is_expired(e)
+            and e.get("verified") is not False
+            and e["id"] not in self._locked_invites
         ]
         if not valid:
             return None
@@ -837,7 +840,7 @@ class InviteCodePlugin(Star):
             code = e["code"]
             if is_group:
                 # Mask the token part, keep domain visible
-                masked = re.sub(r'(invites?|join|register|signup|referral)/\S+', r'\1/****', code, flags=re.IGNORECASE)
+                masked = re.sub(r"(invites?|join|register|signup|referral)/\S+", r"\1/****", code, flags=re.IGNORECASE)
                 if masked != code:
                     code = masked
                 else:
@@ -933,7 +936,7 @@ class InviteCodePlugin(Star):
 
         # Pre-check: only respond if there are valid invites and user has quota
         if not self._pick_random_invite():
-            logger.debug(f"邀请码列表为空或无有效邀请码，忽略触发")
+            logger.debug("邀请码列表为空或无有效邀请码，忽略触发")
             return
 
         if not self._check_daily_limit(event.get_sender_id()):
@@ -946,6 +949,8 @@ class InviteCodePlugin(Star):
         invite = self._pick_random_invite()
         if not invite:
             return
+
+        self._locked_invites.add(invite["id"])
 
         use_kb = self._use_kb()
         kb_question = self._pick_question() if use_kb else None
@@ -1155,6 +1160,8 @@ class InviteCodePlugin(Star):
             logger.error(f"邀请码验证流程异常: {exc}", exc_info=True)
             yield event.plain_result("验证流程出错，请稍后再试。")
         finally:
+            if invite:
+                self._locked_invites.discard(invite["id"])
             event.stop_event()
 
     # ========== LLM Tool: Get Invite Question ==========
@@ -1165,7 +1172,9 @@ class InviteCodePlugin(Star):
     def _gc_pending_challenges(self):
         now = self._now_ts()
         for tok in list(self._pending_challenges.keys()):
-            if self._pending_challenges[tok].get("expires_at", 0) < now:
+            challenge = self._pending_challenges[tok]
+            if challenge.get("expires_at", 0) < now:
+                self._locked_invites.discard(challenge.get("invite_id"))
                 self._pending_challenges.pop(tok, None)
 
     @filter.llm_tool(name="get_invite_question")
@@ -1188,6 +1197,8 @@ class InviteCodePlugin(Star):
         invite = self._pick_random_invite()
         if not invite:
             return "暂无可用的邀请码。引导用户私聊机器人发送邀请链接。"
+
+        self._locked_invites.add(invite["id"])
 
         use_kb = self._use_kb()
         if use_kb:
@@ -1266,6 +1277,7 @@ class InviteCodePlugin(Star):
 
         # 答对即消耗 token
         self._pending_challenges.pop(challenge_token, None)
+        self._locked_invites.discard(invite["id"])
 
         if self._is_expired(invite):
             return "该邀请码已过期,请重新调用 get_invite_question。"
