@@ -832,8 +832,13 @@ class InviteCodePlugin(Star):
             else:
                 v_status = "未验证"
             code = e["code"]
-            if is_group and len(code) > 20:
-                code = code[:10] + "****" + code[-6:]
+            if is_group:
+                # Mask the token part, keep domain visible
+                masked = re.sub(r'(invites?|join|register|signup|referral)/\S+', r'\1/****', code, flags=re.IGNORECASE)
+                if masked != code:
+                    code = masked
+                else:
+                    code = "****"
             lines.append(
                 f"ID={e['id']} | {e['name']} | {v_status} | {expired}\n"
                 f"    {code}"
