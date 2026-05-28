@@ -922,18 +922,20 @@ class InviteCodePlugin(Star):
         if msg.startswith(("/", "!", "#", "！")) or msg.startswith("邀请码"):
             return
 
-        if not await self._detect_invite_intent(event, msg):
+        # Pre-check: only respond if there are valid invites and user has quota
+        if not self._pick_random_invite():
+            logger.debug(f"邀请码列表为空或无有效邀请码，忽略触发")
             return
 
         if not self._check_daily_limit(event.get_sender_id()):
-            yield event.plain_result("你今天已经获取过邀请码了，明天再来吧。")
-            event.stop_event()
+            logger.debug(f"用户 {event.get_sender_id()} 已达每日限额，忽略触发")
+            return
+
+        if not await self._detect_invite_intent(event, msg):
             return
 
         invite = self._pick_random_invite()
         if not invite:
-            yield event.plain_result("暂无可用的邀请码。你可以在私聊中向机器人发送邀请链接来贡献。")
-            event.stop_event()
             return
 
         use_kb = self._use_kb()
