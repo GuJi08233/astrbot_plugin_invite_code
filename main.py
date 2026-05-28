@@ -894,21 +894,27 @@ class InviteCodePlugin(Star):
             yield event.plain_result("已清空所有每日限额记录。")
 
     async def _detect_invite_intent(self, event: AstrMessageEvent, msg: str) -> bool:
-        """Return True if the user genuinely wants an invite code (not just chatting)."""
+        """Return True if the user specifically wants a Linux.Do (L站) invite."""
         try:
             provider = await self._get_judge_provider(event)
             if provider:
                 resp = await provider.text_chat(
                     prompt=(
                         f'群聊中用户说了：「{msg}」\n'
-                        f'请判断：该用户是真心在索要/求邀请码或邀请链接吗？\n'
-                        f'只回复一个字：是 或 否。如果是讨论邀请码怎么用、邀请码是什么、'
-                        f'或者只是在聊天中提到邀请码，回复"否"。'
+                        f'请判断：该用户是在索要 Linux.Do（又称 L站）的邀请码或注册链接吗？\n'
+                        f'\n'
+                        f'回复规则：\n'
+                        f'- 用户在求 L站/Linux.Do 的邀请码或注册链接 → 回复"是"\n'
+                        f'- 用户在求其他社区（如 Nodeloc、Hostloc 等）的邀请码 → 回复"否"\n'
+                        f'- 用户只是在讨论、科普、询问邀请码的用途或机制 → 回复"否"\n'
+                        f'- 用户提到了 L站/Linux.Do 但不是求邀请码 → 回复"否"\n'
+                        f'\n'
+                        f'只回复一个字：是 或 否。'
                     ),
                 )
                 intent = resp.completion_text.strip()
-                logger.debug(f"邀请码意图判断: msg={msg[:50]} intent={intent}")
-                return "否" not in intent and "不是" not in intent
+                logger.debug(f"L站邀请码意图判断: msg={msg[:80]} intent={intent}")
+                return "是" in intent and "否" not in intent
         except Exception as e:
             logger.debug(f"意图判断失败，回退到直接触发: {e}")
         return True
