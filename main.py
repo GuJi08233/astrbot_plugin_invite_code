@@ -819,7 +819,7 @@ class InviteCodePlugin(Star):
         if not self.invite_codes:
             yield event.plain_result("暂无可用的邀请码。")
             return
-        is_group = event.get_message_type().value == "group_message"
+        is_group = bool(event.get_group_id())
         lines = []
         for e in self.invite_codes:
             expired = "已过期" if self._is_expired(e) else self._format_expiry(e)
