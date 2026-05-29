@@ -647,8 +647,12 @@ class InviteCodePlugin(Star):
         if not smtp_host or not user or not password:
             raise ValueError("邮箱配置不完整，请联系管理员完善 SMTP 配置")
 
-        msg = MIMEText(
-            f"你好！\n\n这是你要的邀请码【{name}】：\n{code}\n\n请尽快使用。\n\n发送时间：{time.strftime('%Y-%m-%d %H:%M:%S')}\n--- AstrBot",
+        note = self.config.get("email_note", "").strip()
+        body = f"你好！\n\n这是你要的邀请码【{name}】：\n{code}\n\n请尽快使用。\n\n发送时间：{time.strftime('%Y-%m-%d %H:%M:%S')}"
+        if note:
+            body += f"\n\n{note}"
+        body += "\n--- AstrBot"
+        msg = MIMEText(body,
             "plain",
             "utf-8",
         )

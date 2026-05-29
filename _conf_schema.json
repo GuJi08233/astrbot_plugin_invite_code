@@ -157,6 +157,12 @@
     "default": "private_message",
     "hint": "用户通过验证后的发送方式：private_message 为 QQ 私聊发送，email 为邮件发送"
   },
+  "email_note": {
+    "description": "邮件备注",
+    "type": "string",
+    "default": "",
+    "hint": "附加在邮件正文末尾的自定义备注，支持换行。留空则不显示"
+  },
   "email_config": {
     "description": "邮件发送配置（delivery_method 为 email 时生效）",
     "type": "object",
