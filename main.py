@@ -829,7 +829,7 @@ class InviteCodePlugin(Star):
 
         yield event.plain_result("正在验证邀请链接有效性，请稍候...")
         is_valid, msg = await self._verify_invite_link(url)
-        status = "\\u2705 有效" if is_valid else "\\u274c 无效"
+        status = "✅ 有效" if is_valid else "❌ 无效"
         yield event.plain_result(f"{status}\n链接: {url}\n详情: {msg}")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
