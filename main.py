@@ -812,6 +812,28 @@ class InviteCodePlugin(Star):
         )
 
     @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("验证")
+    async def verify_url_cmd(self, event: AstrMessageEvent, url_or_code: str):
+        """验证邀请链接或邀请码是否有效。用法: /验证 <链接|10位邀请码>"""
+        url = url_or_code.strip()
+        # Auto-construct URL from 10-char invite code
+        if re.match(r"^[A-Za-z0-9]{8,12}$", url):
+            url = f"https://linux.do/invites/{url}"
+        elif not url.startswith("http"):
+            yield event.plain_result("请提供有效的邀请链接或 8~12 位邀请码。\n用法: /验证 https://linux.do/invites/xxx 或 /验证 abc123def4")
+            return
+
+        if not self.config.get("enable_verify", True):
+            yield event.plain_result("链接验证功能未启用，请在配置中开启 enable_verify。")
+            return
+
+        yield event.plain_result("正在验证邀请链接有效性，请稍候...")
+        is_valid, msg = await self._verify_invite_link(url)
+        status = "\\u2705 有效" if is_valid else "\\u274c 无效"
+        yield event.plain_result(f"{status}\n链接: {url}\n详情: {msg}")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("验证邀请码")
     async def verify_invite_cmd(self, event: AstrMessageEvent, id: int):
         """手动验证指定邀请码是否有效。用法: /验证邀请码 <ID>"""
