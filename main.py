@@ -259,6 +259,7 @@ class InviteCodePlugin(Star):
             return True
         if event.get_platform_name() != "aiocqhttp":
             return True
+        info: dict = {}
         try:
             bot = getattr(event, "bot", None)
             if not bot:
@@ -266,7 +267,7 @@ class InviteCodePlugin(Star):
             info = await bot.call_action(
                 action="get_stranger_info",
                 user_id=int(event.get_sender_id()),
-                no_cache=False,
+                no_cache=True,
             )
             # 关键：先判断字段是否存在且非 None
             if "level" not in info or info["level"] is None:
@@ -950,7 +951,6 @@ class InviteCodePlugin(Star):
         yield event.plain_result(f"{status}\n链接: {url}\n详情: {msg}")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("验证邀请码")
     async def verify_invite_cmd(self, event: AstrMessageEvent, id: int):
         """手动验证指定邀请码是否有效。用法: /验证邀请码 <ID>"""
@@ -1328,7 +1328,7 @@ class InviteCodePlugin(Star):
                         ))
                     else:
                         await e.send(e.plain_result(
-                            f"回答错误，已达最大重试次数。正确答案是「{session.session.correct_answer}」。"
+                            f"回答错误，已达最大重试次数。正确答案是「{session.correct_answer}」。"
                             f"请重新发送关键词发起新请求。"
                         ))
                     controller.stop()
