@@ -141,11 +141,32 @@
     "default": 5,
     "hint": "当题库低于此数量时，每次出题后自动补充满（仅知识库模式生效）"
   },
-  "daily_limit": {
-    "description": "每人每天邀请码获取上限",
+  "weekly_limit": {
+    "description": "每人每周邀请码获取上限",
     "type": "int",
-    "default": 1,
-    "hint": "每人每天最多通过问答获取邀请码的次数，0 表示不限制"
+    "default": 3,
+    "hint": "每人每周最多通过问答获取邀请码的次数，0 表示不限制"
+  },
+  "min_qq_level": {
+    "description": "最低QQ账号等级要求",
+    "type": "int",
+    "default": 0,
+    "hint": "要求用户QQ账号等级达到该值才能获取邀请码，0 表示不限制。仅 aiocqhttp 平台生效，依赖 OneBot 实现返回 level 字段"
+  },
+  "min_group_level": {
+    "description": "最低群活跃等级要求",
+    "type": "string",
+    "options": [
+      "",
+      "潜水",
+      "冒泡",
+      "吐槽",
+      "活跃",
+      "话唠",
+      "龙王"
+    ],
+    "default": "",
+    "hint": "要求用户在群内的活跃等级达到该值才能获取邀请码，留空表示不限制。仅 aiocqhttp 群聊场景生效"
   },
   "delivery_method": {
     "description": "邀请码发送方式",

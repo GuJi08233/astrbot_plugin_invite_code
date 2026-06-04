@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import os
 import random
@@ -77,10 +78,10 @@ class InviteCodePlugin(Star):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.data_file = self.data_dir / "invite_codes.json"
         self.question_file = self.data_dir / "question_pool.json"
-        self.daily_usage_file = self.data_dir / "daily_usage.json"
+        self.weekly_usage_file = self.data_dir / "weekly_usage.json"
         self.invite_codes: list[dict] = []
         self.question_pool: list[dict] = []
-        self._daily_usage: dict[str, dict[str, int]] = {}
+        self._weekly_usage: dict[str, dict[str, int]] = {}
         # LLM-tool 出题会话:challenge_token -> {invite_id, question, reference_answer,
         # kb_mode, user_id, expires_at}。避免把正确答案/kb_mode 暴露给 LLM 入参往返。
         self._pending_challenges: dict[str, dict] = {}
@@ -89,7 +90,7 @@ class InviteCodePlugin(Star):
         self._question_pool_refilling: bool = False
         self._load_data()
         self._load_question_pool()
-        self._load_daily_usage()
+        self._load_weekly_usage()
         self._cleanup_expired()
         self._cleanup_task: asyncio.Task | None = None
 
@@ -172,53 +173,138 @@ class InviteCodePlugin(Star):
             logger.error("保存题库失败", exc_info=True)
 
     @staticmethod
-    def _today_str() -> str:
-        import datetime
-        return datetime.date.today().isoformat()
+    def _week_str() -> str:
+        """返回当前 ISO 周标识，如 '2026-W23'。"""
+        today = datetime.date.today()
+        iso = today.isocalendar()
+        return f"{iso[0]}-W{iso[1]:02d}"
 
-    def _load_daily_usage(self):
-        if self.daily_usage_file.exists():
+    def _load_weekly_usage(self):
+        """加载每周用量。自动迁移旧文件 daily_usage.json → weekly_usage.json。"""
+        # 迁移旧文件
+        old_file = self.data_dir / "daily_usage.json"
+        if old_file.exists() and not self.weekly_usage_file.exists():
             try:
-                with open(self.daily_usage_file, encoding="utf-8") as f:
-                    raw = json.load(f)
-                today = self._today_str()
-                normalized: dict[str, dict[str, int]] = {}
-                for date_str, val in raw.items():
-                    if date_str < today:
-                        continue
-                    # Backward compat: old format was list[user_id]
-                    if isinstance(val, list):
-                        normalized[date_str] = dict.fromkeys(val, 1)
-                    elif isinstance(val, dict):
-                        normalized[date_str] = {k: int(v) for k, v in val.items()}
-                self._daily_usage = normalized
+                old_file.rename(self.weekly_usage_file)
+                logger.info("已迁移 daily_usage.json → weekly_usage.json")
             except Exception:
-                self._daily_usage = {}
+                pass
+
+        if self.weekly_usage_file.exists():
+            try:
+                with open(self.weekly_usage_file, encoding="utf-8") as f:
+                    raw = json.load(f)
+                current_week = self._week_str()
+                normalized: dict[str, dict[str, int]] = {}
+                for key, val in raw.items():
+                    # 兼容旧格式: 日期 key 归入对应 ISO 周
+                    if len(key) == 10 and key[4] == "-":
+                        # "2026-06-04" → "2026-W23"
+                        try:
+                            d = datetime.date.fromisoformat(key)
+                            iso = d.isocalendar()
+                            week_key = f"{iso[0]}-W{iso[1]:02d}"
+                        except ValueError:
+                            continue
+                    else:
+                        week_key = key
+                    if week_key < current_week:
+                        continue
+                    if isinstance(val, list):
+                        normalized.setdefault(week_key, {})
+                        for uid in val:
+                            normalized[week_key][uid] = normalized[week_key].get(uid, 0) + 1
+                    elif isinstance(val, dict):
+                        normalized.setdefault(week_key, {})
+                        for k, v in val.items():
+                            normalized[week_key][k] = normalized[week_key].get(k, 0) + int(v)
+                self._weekly_usage = normalized
+            except Exception:
+                self._weekly_usage = {}
         else:
-            self._daily_usage = {}
+            self._weekly_usage = {}
 
-    def _save_daily_usage(self):
+    def _save_weekly_usage(self):
         try:
-            with open(self.daily_usage_file, "w", encoding="utf-8") as f:
-                json.dump(self._daily_usage, f, ensure_ascii=False, indent=2)
+            with open(self.weekly_usage_file, "w", encoding="utf-8") as f:
+                json.dump(self._weekly_usage, f, ensure_ascii=False, indent=2)
         except Exception:
-            logger.error("保存每日用量失败", exc_info=True)
+            logger.error("保存每周用量失败", exc_info=True)
 
-    def _check_daily_limit(self, user_id: str) -> bool:
-        """检查用户今日是否仍可领取(per-user)。True 表示可继续。"""
-        limit = self.config.get("daily_limit", 1)
+    def _check_weekly_limit(self, user_id: str) -> bool:
+        """检查用户本周是否仍可领取(per-user)。True 表示可继续。"""
+        limit = self.config.get("weekly_limit", self.config.get("daily_limit", 3))
         if limit <= 0:
             return True
-        today = self._today_str()
-        used = self._daily_usage.get(today, {})
+        week = self._week_str()
+        used = self._weekly_usage.get(week, {})
         return used.get(user_id, 0) < limit
 
-    def _record_daily_usage(self, user_id: str):
-        today = self._today_str()
-        if today not in self._daily_usage:
-            self._daily_usage[today] = {}
-        self._daily_usage[today][user_id] = self._daily_usage[today].get(user_id, 0) + 1
-        self._save_daily_usage()
+    def _record_weekly_usage(self, user_id: str):
+        week = self._week_str()
+        if week not in self._weekly_usage:
+            self._weekly_usage[week] = {}
+        self._weekly_usage[week][user_id] = self._weekly_usage[week].get(user_id, 0) + 1
+        self._save_weekly_usage()
+
+    async def _check_qq_level(self, event: AstrMessageEvent) -> bool:
+        """检查用户 QQ 账号等级是否满足要求。True 表示通过。仅 aiocqhttp 平台生效。"""
+        min_level = self.config.get("min_qq_level", 0)
+        if min_level <= 0:
+            return True
+        if event.get_platform_name() != "aiocqhttp":
+            return True
+        try:
+            bot = getattr(event, "bot", None)
+            if not bot:
+                return True
+            info = await bot.call_action(
+                action="get_stranger_info",
+                user_id=int(event.get_sender_id()),
+                no_cache=False,
+            )
+            user_level = int(info.get("level", 0))
+            if user_level < min_level:
+                return False
+            return True
+        except Exception as e:
+            logger.warning(f"获取 QQ 等级失败，跳过等级检查: {e}")
+            return True
+
+    async def _check_group_level(self, event: AstrMessageEvent) -> bool:
+        """检查用户群活跃等级是否满足要求。True 表示通过。仅 aiocqhttp 群聊生效。"""
+        min_group_level = self.config.get("min_group_level", "")
+        if not min_group_level:
+            return True
+        if event.get_platform_name() != "aiocqhttp":
+            return True
+        if not event.get_group_id():
+            return True  # 私聊跳过群等级检查
+
+        GROUP_LEVEL_ORDER = {
+            "": 0, "潜水": 1, "冒泡": 2, "吐槽": 3,
+            "活跃": 4, "话唠": 5, "龙王": 6,
+        }
+        required_rank = GROUP_LEVEL_ORDER.get(min_group_level, 0)
+        if required_rank <= 0:
+            return True
+
+        try:
+            bot = getattr(event, "bot", None)
+            if not bot:
+                return True
+            info = await bot.call_action(
+                action="get_group_member_info",
+                group_id=int(event.get_group_id()),
+                user_id=int(event.get_sender_id()),
+                no_cache=False,
+            )
+            user_level_str = info.get("level", "")
+            user_rank = GROUP_LEVEL_ORDER.get(user_level_str, 0)
+            return user_rank >= required_rank
+        except Exception as e:
+            logger.warning(f"获取群活跃等级失败，跳过群等级检查: {e}")
+            return True
 
     def _use_kb(self) -> bool:
         kb_names = self.config.get("kb_names", [])
@@ -936,21 +1022,21 @@ class InviteCodePlugin(Star):
             yield event.plain_result(f"题库已刷新，共 {count} 题。")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("重置每日限额")
-    async def reset_daily_usage_cmd(self, event: AstrMessageEvent, user_id: str = ""):
-        """重置每日邀请码领取记录。用法: /重置每日限额 <QQ号>，留空重置全部。"""
+    @filter.command("重置每周限额")
+    async def reset_weekly_usage_cmd(self, event: AstrMessageEvent, user_id: str = ""):
+        """重置每周邀请码领取记录。用法: /重置每周限额 <QQ号>，留空重置全部。"""
         if user_id:
-            today = self._today_str()
-            if today in self._daily_usage and user_id in self._daily_usage[today]:
-                del self._daily_usage[today][user_id]
-                self._save_daily_usage()
-                yield event.plain_result(f"已重置用户 {user_id} 的每日限额。")
+            week = self._week_str()
+            if week in self._weekly_usage and user_id in self._weekly_usage[week]:
+                del self._weekly_usage[week][user_id]
+                self._save_weekly_usage()
+                yield event.plain_result(f"已重置用户 {user_id} 的每周限额。")
             else:
-                yield event.plain_result(f"用户 {user_id} 今日无领取记录。")
+                yield event.plain_result(f"用户 {user_id} 本周无领取记录。")
         else:
-            self._daily_usage = {}
-            self._save_daily_usage()
-            yield event.plain_result("已清空所有每日限额记录。")
+            self._weekly_usage = {}
+            self._save_weekly_usage()
+            yield event.plain_result("已清空所有每周限额记录。")
 
     async def _detect_invite_intent(self, event: AstrMessageEvent, msg: str) -> bool:
         """Return True if the user specifically wants a Linux.Do (L站) invite."""
@@ -995,8 +1081,18 @@ class InviteCodePlugin(Star):
             logger.debug("邀请码列表为空或无有效邀请码，忽略触发")
             return
 
-        if not self._check_daily_limit(event.get_sender_id()):
-            logger.debug(f"用户 {event.get_sender_id()} 已达每日限额，忽略触发")
+        if not self._check_weekly_limit(event.get_sender_id()):
+            logger.debug(f"用户 {event.get_sender_id()} 已达每周限额，忽略触发")
+            return
+
+        if not await self._check_qq_level(event):
+            min_lv = self.config.get("min_qq_level", 0)
+            yield event.plain_result(f"你的 QQ 等级不足 {min_lv} 级，无法获取邀请码。")
+            return
+
+        if not await self._check_group_level(event):
+            min_gl = self.config.get("min_group_level", "")
+            yield event.plain_result(f"你的群活跃等级不足「{min_gl}」，无法获取邀请码。")
             return
 
         if not await self._detect_invite_intent(event, msg):
@@ -1172,7 +1268,7 @@ class InviteCodePlugin(Star):
                             return
                         try:
                             await self._send_email(target_email, session.invite["code"], session.invite["name"])
-                            self._record_daily_usage(e.get_sender_id())
+                            self._record_weekly_usage(e.get_sender_id())
                             self._consume_invite(session.invite["id"])
                             await e.send(e.plain_result(f"回答正确!邀请码已发送到 {target_email},请查收。"))
                         except Exception as exc:
@@ -1184,7 +1280,7 @@ class InviteCodePlugin(Star):
                     await e.send(e.plain_result("回答正确,正在私发邀请码,请查看私聊。"))
                     try:
                         await self._send_private_msg(e, session.invite["code"], session.invite["name"])
-                        self._record_daily_usage(e.get_sender_id())
+                        self._record_weekly_usage(e.get_sender_id())
                         self._consume_invite(session.invite["id"])
                     except Exception:
                         await e.send(e.plain_result(
@@ -1254,6 +1350,14 @@ class InviteCodePlugin(Star):
         """
         self._cleanup_expired()
         self._gc_pending_challenges()
+
+        if not self._check_weekly_limit(event.get_sender_id()):
+            return "该用户本周已达获取上限，请告知用户下周再来。"
+
+        if not await self._check_qq_level(event):
+            min_lv = self.config.get("min_qq_level", 0)
+            return f"该用户的 QQ 等级不足 {min_lv} 级，无法获取邀请码。"
+
         invite = self._pick_random_invite()
         if not invite:
             return "暂无可用的邀请码。引导用户私聊机器人发送邀请链接。"
@@ -1368,7 +1472,7 @@ class InviteCodePlugin(Star):
                 )
             try:
                 await self._send_email(target_email, invite["code"], invite["name"])
-                self._record_daily_usage(event.get_sender_id())
+                self._record_weekly_usage(event.get_sender_id())
                 self._consume_invite(invite["id"])
                 return f"邀请码已发送至 {target_email},请告知用户查收邮件。"
             except Exception as exc:
@@ -1377,7 +1481,7 @@ class InviteCodePlugin(Star):
 
         try:
             await self._send_private_msg(event, invite["code"], invite["name"])
-            self._record_daily_usage(event.get_sender_id())
+            self._record_weekly_usage(event.get_sender_id())
             self._consume_invite(invite["id"])
         except Exception as exc:
             logger.error(f"LLM tool 私发邀请码失败: {exc}")
