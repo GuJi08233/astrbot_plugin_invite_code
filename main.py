@@ -248,7 +248,12 @@ class InviteCodePlugin(Star):
         self._save_weekly_usage()
 
     async def _check_qq_level(self, event: AstrMessageEvent) -> bool:
-        """检查用户 QQ 账号等级是否满足要求。True 表示通过。仅 aiocqhttp 平台生效。"""
+        """检查用户 QQ 账号等级是否满足要求。True 表示通过。仅 aiocqhttp 平台生效。
+
+        说明：OneBot V11 标准的 get_stranger_info 并不保证返回 level 字段（go-cqhttp 不支持，
+        LLOneBot/Lagrange 等实现才返回）。当 level 字段缺失或异常时，按 fail-open 处理
+        （放行 + 警告日志），避免误伤老用户。
+        """
         min_level = self.config.get("min_qq_level", 0)
         if min_level <= 0:
             return True
@@ -263,16 +268,32 @@ class InviteCodePlugin(Star):
                 user_id=int(event.get_sender_id()),
                 no_cache=False,
             )
-            user_level = int(info.get("level", 0))
+            # 关键：先判断字段是否存在且非 None
+            if "level" not in info or info["level"] is None:
+                logger.warning(
+                    f"OneBot 实现未返回 level 字段，跳过 QQ 等级检查。"
+                    f"请确认你的 OneBot 后端支持（如 LLOneBot/Lagrange）。"
+                )
+                return True
+            user_level = int(info["level"])
             if user_level < min_level:
                 return False
+            return True
+        except (ValueError, TypeError) as e:
+            logger.warning(f"QQ 等级字段格式异常({e})，跳过等级检查: {info.get('level')}")
             return True
         except Exception as e:
             logger.warning(f"获取 QQ 等级失败，跳过等级检查: {e}")
             return True
 
     async def _check_group_level(self, event: AstrMessageEvent) -> bool:
-        """检查用户群活跃等级是否满足要求。True 表示通过。仅 aiocqhttp 群聊生效。"""
+        """检查用户群活跃等级是否满足要求。True 表示通过。仅 aiocqhttp 群聊生效。
+
+        说明：get_group_member_info 的 level 字段在不同 OneBot 实现中格式不同:
+        - go-cqhttp: 数字（1=潜水, 2=冒泡, 3=吐槽, 4=活跃, 5=话唠, 6=龙王）
+        - LLOneBot/Lagrange: 字符串（"潜水"/"冒泡"/"吐槽"/"活跃"/"话唠"/"龙王"）
+        此处做双向兼容。
+        """
         min_group_level = self.config.get("min_group_level", "")
         if not min_group_level:
             return True
@@ -299,8 +320,18 @@ class InviteCodePlugin(Star):
                 user_id=int(event.get_sender_id()),
                 no_cache=False,
             )
-            user_level_str = info.get("level", "")
-            user_rank = GROUP_LEVEL_ORDER.get(user_level_str, 0)
+            raw_level = info.get("level")
+            if raw_level is None:
+                return True
+            # 字符串形式
+            if isinstance(raw_level, str):
+                user_rank = GROUP_LEVEL_ORDER.get(raw_level, 0)
+            # 数字形式（go-cqhttp: 1~6）
+            else:
+                try:
+                    user_rank = int(raw_level)
+                except (ValueError, TypeError):
+                    return True
             return user_rank >= required_rank
         except Exception as e:
             logger.warning(f"获取群活跃等级失败，跳过群等级检查: {e}")
