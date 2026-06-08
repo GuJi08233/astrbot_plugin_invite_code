@@ -141,6 +141,12 @@
     "default": 5,
     "hint": "当题库低于此数量时，每次出题后自动补充满（仅知识库模式生效）"
   },
+  "question_refresh_after_uses": {
+    "description": "题目轮换使用次数",
+    "type": "int",
+    "default": 1,
+    "hint": "每道题被使用达到该次数后，题库会在下次出题后自动生成一批新题替换旧题。建议保持 1，避免同一批题长期反复出现"
+  },
   "weekly_limit": {
     "description": "每人每周邀请码获取上限",
     "type": "int",

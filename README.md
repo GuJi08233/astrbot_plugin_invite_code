@@ -6,6 +6,8 @@ AstrBot 插件 —— Linux.Do 社区知识问答，答对奖励邀请码。
 
 - **群聊触发**：检测到"邀请码"等关键词，经 LLM 意图识别后主动询问是否需要答题
 - **知识库出题**：集成 AstrBot 知识库，自动生成开放式验证题目（知识问答 + 案例分析）
+- **题库轮换**：题目会记录使用次数，优先轮换未使用题目，一轮用完后自动生成新题替换
+- **题目去重**：生成和载入题库时会规范化题干，自动过滤重复题、空题和缺少评判要点的题
 - **LLM 评判**：用户回答后由 LLM 判断是否正确，支持核心观点匹配
 - **链接验证**：支持 Cloudflare Worker Browser Run 远程验证邀请链接有效性
 - **双通道发送**：QQ 私聊 / 邮件发送邀请码
@@ -25,6 +27,8 @@ AstrBot 插件 —— Linux.Do 社区知识问答，答对奖励邀请码。
 | `verify_api_url` | Worker URL | `https://your-worker.workers.dev` |
 | `verify_api_token` | Worker 鉴权 Token | 与 wrangler secret 一致 |
 | `kb_names` | 知识库选择 | Linux.Do |
+| `question_pool_size` | 题库目标数量 | 20 |
+| `question_refresh_after_uses` | 每题使用多少次后轮换新题 | 1 |
 | `judge_model` | 判断模型（意图+判题） | 轻量模型 |
 | `question_gen_model` | 出题模型（题库生成） | 强模型 |
 | `delivery_method` | 发送方式 | private_message / email |
